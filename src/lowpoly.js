@@ -6,6 +6,14 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 
+// Helper to get asset path with Vite base URL (for GitHub Pages deployment)
+const getAssetPath = (path) => {
+  const base = import.meta.env.BASE_URL || '/';
+  // Remove leading slash from path if base already ends with one
+  const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+  return base + cleanPath;
+};
+
 /**
  * Low Poly Scene - Simple viewer for low poly assets
  */
@@ -81,7 +89,7 @@ class LowPolyViewer {
 
     // Load stylized skybox cubemap
     try {
-      this.skyboxCubemap = await this.loadSkybox('/sky_44_2k/sky_44_cubemap_2k/upscaled/');
+      this.skyboxCubemap = await this.loadSkybox(getAssetPath('sky_44_2k/sky_44_cubemap_2k/upscaled/'));
       // Set as background only - NOT as environment (preserves toon shading)
       this.scene.background = this.skyboxCubemap;
       // Boost sky intensity for vibrant anime aesthetic
@@ -95,20 +103,20 @@ class LowPolyViewer {
 
     // Building definitions: path, base X position, spacing between copies
     const buildings = [
-      { path: '/Low%20Poly%20Env%20Exports/house1.glb', name: 'house1', baseX: 0 },
-      { path: '/Low%20Poly%20Env%20Exports/house2.glb', name: 'house2', baseX: 8 },
-      { path: '/Low%20Poly%20Env%20Exports/house3.glb', name: 'house3', baseX: 14 },
-      { path: '/Low%20Poly%20Env%20Exports/nuclearplant.glb', name: 'nuclearPlant', baseX: 20 },
-      { path: '/Low%20Poly%20Env%20Exports/warehouse.glb', name: 'warehouse', baseX: 32 },
-      { path: '/Low%20Poly%20Env%20Exports/office.glb', name: 'office', baseX: 44 },
-      { path: '/Low%20Poly%20Env%20Exports/tree1.glb', name: 'tree1', baseX: 52 },
-      { path: '/Low%20Poly%20Env%20Exports/trafficlight1.glb', name: 'trafficlight1', baseX: 56 },
-      { path: '/Low%20Poly%20Env%20Exports/roadbarrier1.glb', name: 'roadbarrier1', baseX: 60 },
-      { path: '/Low%20Poly%20Env%20Exports/apartment1.glb', name: 'apartment1', baseX: 64 },
-      { path: '/Low%20Poly%20Env%20Exports/building1.glb', name: 'building1', baseX: 72 },
-      { path: '/Low%20Poly%20Env%20Exports/house4.glb', name: 'house4', baseX: 80 },
-      { path: '/Low%20Poly%20Env%20Exports/autoshop.glb', name: 'autoshop', baseX: 88 },
-      { path: '/Low%20Poly%20Env%20Exports/factory.glb', name: 'factory', baseX: 96 },
+      { path: getAssetPath('Low%20Poly%20Env%20Exports/house1.glb'), name: 'house1', baseX: 0 },
+      { path: getAssetPath('Low%20Poly%20Env%20Exports/house2.glb'), name: 'house2', baseX: 8 },
+      { path: getAssetPath('Low%20Poly%20Env%20Exports/house3.glb'), name: 'house3', baseX: 14 },
+      { path: getAssetPath('Low%20Poly%20Env%20Exports/nuclearplant.glb'), name: 'nuclearPlant', baseX: 20 },
+      { path: getAssetPath('Low%20Poly%20Env%20Exports/warehouse.glb'), name: 'warehouse', baseX: 32 },
+      { path: getAssetPath('Low%20Poly%20Env%20Exports/office.glb'), name: 'office', baseX: 44 },
+      { path: getAssetPath('Low%20Poly%20Env%20Exports/tree1.glb'), name: 'tree1', baseX: 52 },
+      { path: getAssetPath('Low%20Poly%20Env%20Exports/trafficlight1.glb'), name: 'trafficlight1', baseX: 56 },
+      { path: getAssetPath('Low%20Poly%20Env%20Exports/roadbarrier1.glb'), name: 'roadbarrier1', baseX: 60 },
+      { path: getAssetPath('Low%20Poly%20Env%20Exports/apartment1.glb'), name: 'apartment1', baseX: 64 },
+      { path: getAssetPath('Low%20Poly%20Env%20Exports/building1.glb'), name: 'building1', baseX: 72 },
+      { path: getAssetPath('Low%20Poly%20Env%20Exports/house4.glb'), name: 'house4', baseX: 80 },
+      { path: getAssetPath('Low%20Poly%20Env%20Exports/autoshop.glb'), name: 'autoshop', baseX: 88 },
+      { path: getAssetPath('Low%20Poly%20Env%20Exports/factory.glb'), name: 'factory', baseX: 96 },
     ];
 
     const ROW_SPACING = 15; // Z spacing between copies
@@ -133,7 +141,7 @@ class LowPolyViewer {
     }
 
     // Load car with specialized toon shader
-    this.car = await this.loadCar('/Low%20Poly%20Env%20Exports/car.glb');
+    this.car = await this.loadCar(getAssetPath('Low%20Poly%20Env%20Exports/car.glb'));
     if (this.car) {
       this.car.scale.set(0.5, 0.5, 0.5);  // Half size
       this.car.position.x -= 8;
@@ -164,6 +172,9 @@ class LowPolyViewer {
 
     // Save default scene state (after all objects loaded)
     this.saveDefaultSceneState();
+
+    // Check for scene in URL parameter (for sharing)
+    await this.loadSceneFromURL();
 
     // Hide loading screen
     this.hideLoadingScreen();
@@ -317,6 +328,22 @@ class LowPolyViewer {
       RIGHT: THREE.MOUSE.PAN
     };
 
+    // MacBook trackpad support: Option(Alt)+drag to rotate (no middle mouse button)
+    // Use pointerdown with capture phase so this runs BEFORE OrbitControls processes the event
+    this.renderer.domElement.addEventListener('pointerdown', (event) => {
+      if (event.button === 0 && event.altKey) {
+        // Option/Alt+click enables rotation with left mouse
+        this.controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+      }
+    }, true);  // capture phase
+
+    this.renderer.domElement.addEventListener('pointerup', (event) => {
+      if (event.button === 0) {
+        // Reset left mouse back to selection mode
+        this.controls.mouseButtons.LEFT = null;
+      }
+    }, true);  // capture phase
+
     // Disable OrbitControls zoom - we'll handle it manually for infinite dolly
     this.controls.enableZoom = false;
 
@@ -465,6 +492,12 @@ class LowPolyViewer {
       this.loadDefaultScene();
     });
 
+    // Share scene button
+    const shareBtn = document.getElementById('share-scene-btn');
+    if (shareBtn) {
+      shareBtn.addEventListener('click', () => this.shareScene());
+    }
+
     // Render initial list
     this.renderSceneList();
   }
@@ -472,20 +505,20 @@ class LowPolyViewer {
   setupBuildingSpawner() {
     // Building paths mapping
     this.buildingPaths = {
-      'house1': '/Low%20Poly%20Env%20Exports/house1.glb',
-      'house2': '/Low%20Poly%20Env%20Exports/house2.glb',
-      'house3': '/Low%20Poly%20Env%20Exports/house3.glb',
-      'nuclearplant': '/Low%20Poly%20Env%20Exports/nuclearplant.glb',
-      'warehouse': '/Low%20Poly%20Env%20Exports/warehouse.glb',
-      'office': '/Low%20Poly%20Env%20Exports/office.glb',
-      'tree1': '/Low%20Poly%20Env%20Exports/tree1.glb',
-      'trafficlight1': '/Low%20Poly%20Env%20Exports/trafficlight1.glb',
-      'roadbarrier1': '/Low%20Poly%20Env%20Exports/roadbarrier1.glb',
-      'apartment1': '/Low%20Poly%20Env%20Exports/apartment1.glb',
-      'building1': '/Low%20Poly%20Env%20Exports/building1.glb',
-      'house4': '/Low%20Poly%20Env%20Exports/house4.glb',
-      'autoshop': '/Low%20Poly%20Env%20Exports/autoshop.glb',
-      'factory': '/Low%20Poly%20Env%20Exports/factory.glb',
+      'house1': getAssetPath('Low%20Poly%20Env%20Exports/house1.glb'),
+      'house2': getAssetPath('Low%20Poly%20Env%20Exports/house2.glb'),
+      'house3': getAssetPath('Low%20Poly%20Env%20Exports/house3.glb'),
+      'nuclearplant': getAssetPath('Low%20Poly%20Env%20Exports/nuclearplant.glb'),
+      'warehouse': getAssetPath('Low%20Poly%20Env%20Exports/warehouse.glb'),
+      'office': getAssetPath('Low%20Poly%20Env%20Exports/office.glb'),
+      'tree1': getAssetPath('Low%20Poly%20Env%20Exports/tree1.glb'),
+      'trafficlight1': getAssetPath('Low%20Poly%20Env%20Exports/trafficlight1.glb'),
+      'roadbarrier1': getAssetPath('Low%20Poly%20Env%20Exports/roadbarrier1.glb'),
+      'apartment1': getAssetPath('Low%20Poly%20Env%20Exports/apartment1.glb'),
+      'building1': getAssetPath('Low%20Poly%20Env%20Exports/building1.glb'),
+      'house4': getAssetPath('Low%20Poly%20Env%20Exports/house4.glb'),
+      'autoshop': getAssetPath('Low%20Poly%20Env%20Exports/autoshop.glb'),
+      'factory': getAssetPath('Low%20Poly%20Env%20Exports/factory.glb'),
     };
 
     // Menu toggle
@@ -680,6 +713,73 @@ class LowPolyViewer {
     container.querySelectorAll('.scene-delete-btn').forEach(btn => {
       btn.addEventListener('click', () => this.deleteScene(btn.dataset.scene));
     });
+  }
+
+  // Generate a shareable URL with scene data encoded
+  shareScene() {
+    const state = this.captureSceneState();
+    const json = JSON.stringify(state);
+    // Compress using base64
+    const encoded = btoa(encodeURIComponent(json));
+
+    // Build URL with current page path
+    const baseUrl = window.location.origin + window.location.pathname;
+    const shareUrl = `${baseUrl}?scene=${encoded}`;
+
+    // Copy to clipboard
+    navigator.clipboard.writeText(shareUrl).then(() => {
+      alert('Share URL copied to clipboard!\n\nPaste this URL to load the scene on any device.');
+      console.log('Share URL:', shareUrl);
+    }).catch(err => {
+      // Fallback: show in prompt
+      prompt('Copy this URL to share your scene:', shareUrl);
+    });
+
+    return shareUrl;
+  }
+
+  // Load scene from URL parameter if present, or load preset on GitHub Pages
+  async loadSceneFromURL() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const sceneParam = urlParams.get('scene');
+
+    // First try loading from URL parameter
+    if (sceneParam) {
+      try {
+        const json = decodeURIComponent(atob(sceneParam));
+        const state = JSON.parse(json);
+        await this.applySceneState(state);
+        console.log('Scene loaded from URL');
+
+        // Clean URL without reloading page
+        const cleanUrl = window.location.origin + window.location.pathname;
+        window.history.replaceState({}, document.title, cleanUrl);
+
+        return true;
+      } catch (err) {
+        console.error('Failed to load scene from URL:', err);
+      }
+    }
+
+    // If no URL scene and on GitHub Pages, load preset scene
+    const isGitHubPages = window.location.hostname.includes('github.io');
+    if (isGitHubPages) {
+      try {
+        const presetPath = getAssetPath('presets/game-scene-1.json');
+        console.log('Loading preset scene from:', presetPath);
+        const response = await fetch(presetPath);
+        if (response.ok) {
+          const state = await response.json();
+          await this.applySceneState(state);
+          console.log('Preset scene loaded successfully');
+          return true;
+        }
+      } catch (err) {
+        console.error('Failed to load preset scene:', err);
+      }
+    }
+
+    return false;
   }
 
   // Create a single street light pole (procedural geometry)
@@ -1604,8 +1704,8 @@ class LowPolyViewer {
     // Load templates
     const templates = {};
     const roadPaths = {
-      'Road1': '/Low%20Poly%20Env%20Exports/Road1.glb',
-      'RoadX': '/Low%20Poly%20Env%20Exports/RoadX.glb'
+      'Road1': getAssetPath('Low%20Poly%20Env%20Exports/Road1.glb'),
+      'RoadX': getAssetPath('Low%20Poly%20Env%20Exports/RoadX.glb')
     };
 
     for (const [name, path] of Object.entries(roadPaths)) {
@@ -1812,8 +1912,8 @@ class LowPolyViewer {
 
     // Load Road1 and RoadX
     const roadPaths = {
-      'Road1': '/Low%20Poly%20Env%20Exports/Road1.glb',
-      'RoadX': '/Low%20Poly%20Env%20Exports/RoadX.glb'
+      'Road1': getAssetPath('Low%20Poly%20Env%20Exports/Road1.glb'),
+      'RoadX': getAssetPath('Low%20Poly%20Env%20Exports/RoadX.glb')
     };
 
     for (const [name, path] of Object.entries(roadPaths)) {

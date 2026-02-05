@@ -72,6 +72,10 @@ class LowPolyViewer {
     this.savedScenes = {};  // Named scenes
     this.currentSceneName = null;
 
+    // Camera view management
+    this.currentCameraViews = { 'Default': null };  // Named camera views for current scene
+    this.activeCameraView = 'Default';
+
     // Undo history
     this.undoHistory = [];
     this.MAX_UNDO_STEPS = 50;
@@ -510,8 +514,15 @@ class LowPolyViewer {
       clearTokenBtn.addEventListener('click', () => this.clearGitHubToken());
     }
 
-    // Render initial list
+    // Save camera view button
+    const saveCamBtn = document.getElementById('save-camera-btn');
+    if (saveCamBtn) {
+      saveCamBtn.addEventListener('click', () => this.saveCameraView());
+    }
+
+    // Render initial lists
     this.renderSceneList();
+    this.renderCameraViewList();
   }
 
   setupBuildingSpawner() {
@@ -584,24 +595,50 @@ class LowPolyViewer {
     console.log('Default scene state saved');
   }
 
+  // Capture current camera state
+  captureCameraState() {
+    return {
+      position: {
+        x: this.camera.position.x,
+        y: this.camera.position.y,
+        z: this.camera.position.z
+      },
+      target: {
+        x: this.controls.target.x,
+        y: this.controls.target.y,
+        z: this.controls.target.z
+      },
+      zoom: this.camera.zoom
+    };
+  }
+
+  // Apply a camera state
+  applyCameraState(camState) {
+    if (!camState) return;
+    if (camState.position) {
+      this.camera.position.set(camState.position.x, camState.position.y, camState.position.z);
+    }
+    if (camState.target) {
+      this.controls.target.set(camState.target.x, camState.target.y, camState.target.z);
+    }
+    if (camState.zoom !== undefined) {
+      this.camera.zoom = camState.zoom;
+      this.camera.updateProjectionMatrix();
+    }
+    this.controls.update();
+  }
+
   captureSceneState() {
     const state = {
       transforms: {},
       spawned: [], // Track dynamically spawned objects
-      camera: {
-        position: {
-          x: this.camera.position.x,
-          y: this.camera.position.y,
-          z: this.camera.position.z
-        },
-        target: {
-          x: this.controls.target.x,
-          y: this.controls.target.y,
-          z: this.controls.target.z
-        },
-        zoom: this.camera.zoom
-      }
+      cameraViews: this.currentCameraViews || { 'Default': this.captureCameraState() },
+      activeCameraView: this.activeCameraView || 'Default'
     };
+
+    // Update the active camera view with current camera position
+    state.cameraViews[state.activeCameraView] = this.captureCameraState();
+
     this.selectableObjects.forEach(obj => {
       state.transforms[obj.name] = {
         position: { x: obj.position.x, y: obj.position.y, z: obj.position.z },
@@ -657,21 +694,101 @@ class LowPolyViewer {
       }
     });
 
-    // Restore camera position and target if available
-    if (state.camera) {
-      const cam = state.camera;
-      if (cam.position) {
-        this.camera.position.set(cam.position.x, cam.position.y, cam.position.z);
-      }
-      if (cam.target) {
-        this.controls.target.set(cam.target.x, cam.target.y, cam.target.z);
-      }
-      if (cam.zoom !== undefined) {
-        this.camera.zoom = cam.zoom;
-        this.camera.updateProjectionMatrix();
-      }
-      this.controls.update();
+    // Handle camera views (new format) or legacy camera (old format)
+    if (state.cameraViews) {
+      this.currentCameraViews = state.cameraViews;
+      this.activeCameraView = state.activeCameraView || Object.keys(state.cameraViews)[0] || 'Default';
+      this.applyCameraState(state.cameraViews[this.activeCameraView]);
+      this.renderCameraViewList();
+    } else if (state.camera) {
+      // Legacy format - convert to new format
+      this.currentCameraViews = { 'Default': state.camera };
+      this.activeCameraView = 'Default';
+      this.applyCameraState(state.camera);
+      this.renderCameraViewList();
     }
+  }
+
+  // Save current camera position as a named view
+  saveCameraView(name) {
+    if (!name) {
+      name = prompt('Enter camera view name:', `View ${Object.keys(this.currentCameraViews || {}).length + 1}`);
+      if (!name) return;
+    }
+
+    if (!this.currentCameraViews) {
+      this.currentCameraViews = {};
+    }
+
+    this.currentCameraViews[name] = this.captureCameraState();
+    this.activeCameraView = name;
+    console.log(`Camera view saved: ${name}`);
+    this.renderCameraViewList();
+  }
+
+  // Load a named camera view
+  loadCameraView(name) {
+    if (this.currentCameraViews && this.currentCameraViews[name]) {
+      // Save current view before switching
+      if (this.activeCameraView && this.currentCameraViews[this.activeCameraView]) {
+        this.currentCameraViews[this.activeCameraView] = this.captureCameraState();
+      }
+
+      this.activeCameraView = name;
+      this.applyCameraState(this.currentCameraViews[name]);
+      console.log(`Camera view loaded: ${name}`);
+      this.renderCameraViewList();
+    }
+  }
+
+  // Delete a camera view
+  deleteCameraView(name) {
+    if (this.currentCameraViews && this.currentCameraViews[name]) {
+      delete this.currentCameraViews[name];
+
+      // If deleted the active view, switch to first available
+      if (this.activeCameraView === name) {
+        const remaining = Object.keys(this.currentCameraViews);
+        this.activeCameraView = remaining[0] || 'Default';
+        if (remaining.length === 0) {
+          this.currentCameraViews['Default'] = this.captureCameraState();
+        }
+      }
+
+      console.log(`Camera view deleted: ${name}`);
+      this.renderCameraViewList();
+    }
+  }
+
+  // Render camera view list in UI
+  renderCameraViewList() {
+    const container = document.getElementById('camera-views-list');
+    if (!container) return;
+
+    const views = Object.keys(this.currentCameraViews || {});
+
+    if (views.length === 0) {
+      container.innerHTML = '<div style="color:#666;font-size:10px;text-align:center;">No camera views</div>';
+      return;
+    }
+
+    container.innerHTML = views.map(name => {
+      const isActive = name === this.activeCameraView;
+      return `
+        <div style="display:flex;align-items:center;margin-bottom:3px;">
+          <button class="cam-view-btn" data-view="${name}" style="flex:1;background:${isActive ? '#3498db' : '#444'};color:#fff;border:none;padding:4px 6px;border-radius:3px;cursor:pointer;text-align:left;font-size:10px;">${name}</button>
+          <button class="cam-view-delete" data-view="${name}" style="background:#c0392b;color:#fff;border:none;padding:4px 6px;border-radius:3px;cursor:pointer;margin-left:3px;font-size:9px;">X</button>
+        </div>
+      `;
+    }).join('');
+
+    // Add event listeners
+    container.querySelectorAll('.cam-view-btn').forEach(btn => {
+      btn.addEventListener('click', () => this.loadCameraView(btn.dataset.view));
+    });
+    container.querySelectorAll('.cam-view-delete').forEach(btn => {
+      btn.addEventListener('click', () => this.deleteCameraView(btn.dataset.view));
+    });
   }
 
   saveScene(name) {
@@ -802,12 +919,36 @@ class LowPolyViewer {
       }
     }
 
-    // If no URL scene and on GitHub Pages, load preset scene
+    // If no URL scene and on GitHub Pages, load scenes from GitHub
     const isGitHubPages = window.location.hostname.includes('github.io');
     if (isGitHubPages) {
       try {
+        // Try loading all scenes first (includes saved scenes and camera views)
+        const scenesPath = getAssetPath('presets/scenes.json');
+        console.log('Loading scenes from:', scenesPath);
+        const scenesResponse = await fetch(scenesPath);
+
+        if (scenesResponse.ok) {
+          const allData = await scenesResponse.json();
+
+          // Load saved scenes into localStorage-equivalent
+          if (allData.savedScenes) {
+            this.savedScenes = allData.savedScenes;
+            this.renderSceneList();
+            console.log('Loaded saved scenes from GitHub:', Object.keys(allData.savedScenes));
+          }
+
+          // Apply current scene
+          if (allData.currentScene) {
+            await this.applySceneState(allData.currentScene);
+            console.log('Current scene loaded from GitHub');
+            return true;
+          }
+        }
+
+        // Fallback to simple preset
         const presetPath = getAssetPath('presets/game-scene-1.json');
-        console.log('Loading preset scene from:', presetPath);
+        console.log('Falling back to preset:', presetPath);
         const response = await fetch(presetPath);
         if (response.ok) {
           const state = await response.json();
@@ -816,7 +957,7 @@ class LowPolyViewer {
           return true;
         }
       } catch (err) {
-        console.error('Failed to load preset scene:', err);
+        console.error('Failed to load scenes from GitHub:', err);
       }
     }
 
@@ -855,70 +996,97 @@ class LowPolyViewer {
 
     const owner = 'creativehubiion';
     const repo = 'hyundai-lowpoly-toon';
-    const path = 'assets/presets/game-scene-1.json';
     const branch = 'master';
 
     try {
-      // Capture current scene state
-      const state = this.captureSceneState();
-      const content = JSON.stringify(state, null, 2);
-      const contentBase64 = btoa(unescape(encodeURIComponent(content)));
+      // Build complete scenes data
+      // Include current scene state and all saved scenes
+      const currentState = this.captureSceneState();
 
-      // Get current file SHA (required for updates)
-      const getFileResponse = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${branch}`,
-        {
-          headers: {
-            'Authorization': `token ${token}`,
-            'Accept': 'application/vnd.github.v3+json'
-          }
-        }
+      const allData = {
+        currentScene: currentState,
+        savedScenes: this.savedScenes,
+        lastUpdated: new Date().toISOString()
+      };
+
+      // Push to scenes.json (all scenes)
+      await this.pushFileToGitHub(
+        token, owner, repo, branch,
+        'assets/presets/scenes.json',
+        JSON.stringify(allData, null, 2),
+        'Update all scenes data'
       );
 
-      let sha = null;
-      if (getFileResponse.ok) {
-        const fileData = await getFileResponse.json();
-        sha = fileData.sha;
-      }
-
-      // Push the update
-      const updateResponse = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
-        {
-          method: 'PUT',
-          headers: {
-            'Authorization': `token ${token}`,
-            'Accept': 'application/vnd.github.v3+json',
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            message: `Update scene preset (camera + objects)\n\nPushed from Low Poly Toon Viewer`,
-            content: contentBase64,
-            sha: sha,
-            branch: branch
-          })
-        }
+      // Also update the default preset (game-scene-1.json) with current scene
+      await this.pushFileToGitHub(
+        token, owner, repo, branch,
+        'assets/presets/game-scene-1.json',
+        JSON.stringify(currentState, null, 2),
+        'Update default scene preset'
       );
 
-      if (updateResponse.ok) {
-        alert('Scene pushed to GitHub successfully!\n\nThe preset will update on the live site after GitHub Pages rebuilds (usually 1-2 minutes).');
-        console.log('Scene pushed to GitHub');
-        return true;
-      } else {
-        const error = await updateResponse.json();
-        if (updateResponse.status === 401) {
-          // Token invalid, clear it and retry
-          this.setGitHubToken(null);
-          alert('GitHub token is invalid or expired. Please enter a new one.');
-          return this.pushToGitHub();
-        }
-        throw new Error(error.message || 'Failed to push to GitHub');
-      }
+      alert('All scenes pushed to GitHub successfully!\n\nThe site will update after GitHub Pages rebuilds (1-2 minutes).');
+      console.log('Scenes pushed to GitHub');
+      return true;
+
     } catch (err) {
       console.error('GitHub push failed:', err);
+      if (err.message.includes('401')) {
+        this.setGitHubToken(null);
+        alert('GitHub token is invalid or expired. Please enter a new one.');
+        return this.pushToGitHub();
+      }
       alert(`Failed to push to GitHub:\n${err.message}`);
       return false;
     }
+  }
+
+  // Helper to push a single file to GitHub
+  async pushFileToGitHub(token, owner, repo, branch, path, content, message) {
+    const contentBase64 = btoa(unescape(encodeURIComponent(content)));
+
+    // Get current file SHA (required for updates)
+    const getFileResponse = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${branch}`,
+      {
+        headers: {
+          'Authorization': `token ${token}`,
+          'Accept': 'application/vnd.github.v3+json'
+        }
+      }
+    );
+
+    let sha = null;
+    if (getFileResponse.ok) {
+      const fileData = await getFileResponse.json();
+      sha = fileData.sha;
+    }
+
+    // Push the update
+    const updateResponse = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
+      {
+        method: 'PUT',
+        headers: {
+          'Authorization': `token ${token}`,
+          'Accept': 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          message: `${message}\n\nPushed from Low Poly Toon Viewer`,
+          content: contentBase64,
+          sha: sha,
+          branch: branch
+        })
+      }
+    );
+
+    if (!updateResponse.ok) {
+      const error = await updateResponse.json();
+      throw new Error(error.message || `Failed to push ${path}`);
+    }
+
+    return true;
   }
 
   // Clear stored GitHub token

@@ -258,22 +258,30 @@ class LowPolyViewer {
   }
 
   setupRenderer() {
+    // Detect mobile for performance optimizations
+    this.isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
     this.renderer = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: !this.isMobile,  // Disable antialiasing on mobile for performance
       powerPreference: 'high-performance'
     });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Lower pixel ratio on mobile for better performance
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.isMobile ? 1.5 : 2));
     // sRGB encoding makes colors pop
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     // ACESFilmic tone mapping for moody wet look
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 0.85;  // Crush blacks for high-contrast cinematic look
-    // Enable shadow maps - PCFSoftShadowMap for smooth curves
-    this.renderer.shadowMap.enabled = true;
+    // Enable shadow maps - disable on mobile for performance
+    this.renderer.shadowMap.enabled = !this.isMobile;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.container.appendChild(this.renderer.domElement);
     window.addEventListener('resize', () => this.onResize());
+
+    if (this.isMobile) {
+      console.log('Mobile detected - using performance optimizations');
+    }
   }
 
   setupScene() {
@@ -1510,26 +1518,44 @@ class LowPolyViewer {
 
   // Setup CubeCamera for static puddle reflections (one-time capture)
   setupPuddleCubeCamera() {
-    // Create render target for cube camera (256x256 for performance)
-    const cubeRenderTarget = new THREE.WebGLCubeRenderTarget(256, {
-      format: THREE.RGBAFormat,
-      generateMipmaps: true,
-      minFilter: THREE.LinearMipmapLinearFilter
-    });
+    // Skip CubeCamera on mobile devices (causes crashes on iOS)
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (isMobile) {
+      console.log('Mobile detected - skipping CubeCamera for performance');
+      this.puddleCubeCamera = null;
+      this.waterNormalMap = this.createWaterNormalMap();
+      this.puddleReflectionCaptured = true;  // Skip capture
+      return null;
+    }
 
-    // Create cube camera positioned at average puddle height
-    this.puddleCubeCamera = new THREE.CubeCamera(0.1, 150, cubeRenderTarget);
-    this.puddleCubeCamera.position.set(0, 0.5, -25); // Near the car area, slightly elevated
-    this.scene.add(this.puddleCubeCamera);
+    try {
+      // Create render target for cube camera (256x256 for performance)
+      const cubeRenderTarget = new THREE.WebGLCubeRenderTarget(256, {
+        format: THREE.RGBAFormat,
+        generateMipmaps: true,
+        minFilter: THREE.LinearMipmapLinearFilter
+      });
 
-    // Create shared normal map for water distortion
-    this.waterNormalMap = this.createWaterNormalMap();
+      // Create cube camera positioned at average puddle height
+      this.puddleCubeCamera = new THREE.CubeCamera(0.1, 150, cubeRenderTarget);
+      this.puddleCubeCamera.position.set(0, 0.5, -25); // Near the car area, slightly elevated
+      this.scene.add(this.puddleCubeCamera);
 
-    // Flag for static capture (buildings don't move, so capture once)
-    this.puddleReflectionCaptured = false;
+      // Create shared normal map for water distortion
+      this.waterNormalMap = this.createWaterNormalMap();
 
-    console.log('Puddle CubeCamera ready (static mode)');
-    return cubeRenderTarget.texture;
+      // Flag for static capture (buildings don't move, so capture once)
+      this.puddleReflectionCaptured = false;
+
+      console.log('Puddle CubeCamera ready (static mode)');
+      return cubeRenderTarget.texture;
+    } catch (error) {
+      console.warn('CubeCamera failed, using skybox fallback:', error);
+      this.puddleCubeCamera = null;
+      this.waterNormalMap = this.createWaterNormalMap();
+      this.puddleReflectionCaptured = true;
+      return null;
+    }
   }
 
   // Capture static puddle reflections (call once after scene loads)

@@ -21,6 +21,9 @@ export default defineConfig({
       }
     }
   },
+  resolve: {
+    dedupe: ['three']
+  },
   optimizeDeps: {
     include: ['three']
   }

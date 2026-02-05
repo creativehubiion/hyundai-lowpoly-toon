@@ -1,4 +1,23 @@
 console.log('lowpoly.js file loaded!');
+
+// Global error handler to catch iOS crashes
+window.onerror = function(msg, url, line, col, error) {
+  console.error('Global error:', msg, 'at', url, line, col);
+  const errorDiv = document.createElement('div');
+  errorDiv.style.cssText = 'position:fixed;top:10px;left:10px;right:10px;background:red;color:white;padding:10px;z-index:99999;font-size:12px;word-wrap:break-word;';
+  errorDiv.textContent = `Error: ${msg} (line ${line})`;
+  document.body.appendChild(errorDiv);
+  return false;
+};
+
+window.addEventListener('unhandledrejection', function(event) {
+  console.error('Unhandled promise rejection:', event.reason);
+  const errorDiv = document.createElement('div');
+  errorDiv.style.cssText = 'position:fixed;top:50px;left:10px;right:10px;background:orange;color:black;padding:10px;z-index:99999;font-size:12px;word-wrap:break-word;';
+  errorDiv.textContent = `Promise rejected: ${event.reason}`;
+  document.body.appendChild(errorDiv);
+});
+
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
@@ -83,8 +102,23 @@ class LowPolyViewer {
 
   async init() {
     console.log('LowPolyViewer init starting...');
-    this.setupRenderer();
-    this.setupScene();
+
+    try {
+      this.setupRenderer();
+      console.log('Renderer OK');
+    } catch (e) {
+      this.showError('Renderer failed: ' + e.message);
+      return;
+    }
+
+    try {
+      this.setupScene();
+      console.log('Scene OK');
+    } catch (e) {
+      this.showError('Scene failed: ' + e.message);
+      return;
+    }
+
     this.setupLoaders();
     this.setupLighting();
     this.setupControls();
@@ -92,55 +126,97 @@ class LowPolyViewer {
     console.log('Setup complete, loading assets...');
 
     // Load stylized skybox cubemap
+    // iOS: use smaller non-upscaled PNG (less memory)
+    // Android/Desktop: use upscaled webp
     try {
-      this.skyboxCubemap = await this.loadSkybox(getAssetPath('sky_44_2k/sky_44_cubemap_2k/upscaled/'));
-      // Set as background only - NOT as environment (preserves toon shading)
+      if (this.isIOS) {
+        // iOS: use smaller PNG cubemap (upscaled crashes iOS WebKit)
+        const skyboxPath = getAssetPath('sky_44_2k/sky_44_cubemap_2k/');
+        this.skyboxCubemap = await this.loadSkybox(skyboxPath, 'png');
+        console.log('Skybox loaded (iOS - smaller png)');
+      } else {
+        const skyboxPath = getAssetPath('sky_44_2k/sky_44_cubemap_2k/upscaled/');
+        this.skyboxCubemap = await this.loadSkybox(skyboxPath, 'webp');
+        console.log('Skybox loaded (webp)');
+      }
       this.scene.background = this.skyboxCubemap;
-      // Boost sky intensity for vibrant anime aesthetic
-      this.scene.backgroundIntensity = 1.8;
-      // Atmospheric fog - smooth fade to hide horizon
-      this.scene.fog = new THREE.Fog(0xd0e0ff, 20, 100);
-      console.log('Skybox loaded with intensity 1.8');
+      this.scene.backgroundIntensity = this.isMobile ? 1.5 : 1.8;
+      this.scene.fog = new THREE.Fog(0xd0e0ff, this.isMobile ? 30 : 20, this.isMobile ? 120 : 100);
     } catch (error) {
-      console.warn('Skybox not found, using default sky color');
+      console.warn('Skybox failed, using sky color:', error.message);
+      this.scene.background = new THREE.Color(0x87ceeb);
+      this.scene.fog = new THREE.Fog(0x87ceeb, 30, 150);
+      this.skyboxCubemap = null;
     }
 
-    // Building definitions: path, base X position, spacing between copies
-    const buildings = [
-      { path: getAssetPath('Low%20Poly%20Env%20Exports/house1.glb'), name: 'house1', baseX: 0 },
-      { path: getAssetPath('Low%20Poly%20Env%20Exports/house2.glb'), name: 'house2', baseX: 8 },
-      { path: getAssetPath('Low%20Poly%20Env%20Exports/house3.glb'), name: 'house3', baseX: 14 },
-      { path: getAssetPath('Low%20Poly%20Env%20Exports/nuclearplant.glb'), name: 'nuclearPlant', baseX: 20 },
-      { path: getAssetPath('Low%20Poly%20Env%20Exports/warehouse.glb'), name: 'warehouse', baseX: 32 },
-      { path: getAssetPath('Low%20Poly%20Env%20Exports/office.glb'), name: 'office', baseX: 44 },
-      { path: getAssetPath('Low%20Poly%20Env%20Exports/tree1.glb'), name: 'tree1', baseX: 52 },
-      { path: getAssetPath('Low%20Poly%20Env%20Exports/trafficlight1.glb'), name: 'trafficlight1', baseX: 56 },
-      { path: getAssetPath('Low%20Poly%20Env%20Exports/roadbarrier1.glb'), name: 'roadbarrier1', baseX: 60 },
-      { path: getAssetPath('Low%20Poly%20Env%20Exports/apartment1.glb'), name: 'apartment1', baseX: 64 },
-      { path: getAssetPath('Low%20Poly%20Env%20Exports/building1.glb'), name: 'building1', baseX: 72 },
-      { path: getAssetPath('Low%20Poly%20Env%20Exports/house4.glb'), name: 'house4', baseX: 80 },
-      { path: getAssetPath('Low%20Poly%20Env%20Exports/autoshop.glb'), name: 'autoshop', baseX: 88 },
-      { path: getAssetPath('Low%20Poly%20Env%20Exports/factory.glb'), name: 'factory', baseX: 96 },
+    // Building model paths
+    const buildingPaths = {
+      'apartment1': getAssetPath('Low%20Poly%20Env%20Exports/apartment1.glb'),
+      'autoshop': getAssetPath('Low%20Poly%20Env%20Exports/autoshop.glb'),
+      'building1': getAssetPath('Low%20Poly%20Env%20Exports/building1.glb'),
+      'factory': getAssetPath('Low%20Poly%20Env%20Exports/factory.glb'),
+      'house1': getAssetPath('Low%20Poly%20Env%20Exports/house1.glb'),
+      'house2': getAssetPath('Low%20Poly%20Env%20Exports/house2.glb'),
+      'house3': getAssetPath('Low%20Poly%20Env%20Exports/house3.glb'),
+      'house4': getAssetPath('Low%20Poly%20Env%20Exports/house4.glb'),
+      'nuclearPlant': getAssetPath('Low%20Poly%20Env%20Exports/nuclearplant.glb'),
+      'office': getAssetPath('Low%20Poly%20Env%20Exports/office.glb'),
+      'roadbarrier1': getAssetPath('Low%20Poly%20Env%20Exports/roadbarrier1.glb'),
+      'trafficlight1': getAssetPath('Low%20Poly%20Env%20Exports/trafficlight1.glb'),
+      'tree1': getAssetPath('Low%20Poly%20Env%20Exports/tree1.glb'),
+      'warehouse': getAssetPath('Low%20Poly%20Env%20Exports/warehouse.glb'),
+    };
+
+    // Scene layout - buildings along the road
+    // iOS: load only nearby buildings to prevent memory crash
+    const fullSceneLayout = [
+      { name: "apartment1_4", type: "apartment1", x: 2.86, z: -19.55, rot: -90 },
+      { name: "autoshop_4", type: "autoshop", x: 3.04, z: -30.38, rot: 0 },
+      { name: "building1_4", type: "building1", x: -2.87, z: -18.97, rot: 90 },
+      { name: "factory_4", type: "factory", x: -4.1, z: -45.44, rot: 0 },
+      { name: "house1_2", type: "house1", x: -2.74, z: -21.62, rot: 90 },
+      { name: "house2_3", type: "house2", x: 2.92, z: -16.23, rot: -90 },
+      { name: "house3_1", type: "house3", x: 2.99, z: -23.47, rot: -90 },
+      { name: "house3_4", type: "house3", x: 2.45, z: -34.98, rot: -90 },
+      { name: "house4_4", type: "house4", x: -2.64, z: -24.73, rot: 90 },
+      { name: "nuclearPlant_1", type: "nuclearPlant", x: -6.2, z: -33.7, rot: 0 },
+      { name: "office_1", type: "office", x: 4.38, z: -46.81, rot: 0 },
+      { name: "office_2", type: "office", x: -4.35, z: -39.92, rot: 0 },
+      { name: "roadbarrier1_2", type: "roadbarrier1", x: 0.98, z: -29.45, rot: 0 },
+      { name: "roadbarrier1_4", type: "roadbarrier1", x: -0.94, z: -29.44, rot: 0 },
+      { name: "roadbarrier1_5", type: "roadbarrier1", x: -0.03, z: -29.45, rot: 0 },
+      { name: "trafficlight1_1", type: "trafficlight1", x: -1.7, z: -25.62, rot: 0 },
+      { name: "tree1_1", type: "tree1", x: 2.34, z: -25.06, rot: 0 },
+      { name: "tree1_4", type: "tree1", x: 2.21, z: -33.35, rot: -90 },
+      { name: "warehouse_1", type: "warehouse", x: 8.85, z: -33.28, rot: 0 },
+      { name: "warehouse_3", type: "warehouse", x: 5.95, z: -39.84, rot: -90 },
     ];
 
-    const ROW_SPACING = 15; // Z spacing between copies
+    // iOS test: all buildings, no cubemap
+    const sceneLayout = fullSceneLayout;
 
-    // Load each building and create 3 copies
-    for (const building of buildings) {
-      const template = await this.loadModel(building.path);
-      if (template) {
-        // First copy at original position
-        template.position.x = building.baseX;
-        this.registerSelectable(template, `${building.name}_1`);
+    // Cache loaded models for reuse (remove from scene after loading)
+    const modelCache = {};
 
-        // Create 2 more copies at different Z positions
-        for (let i = 2; i <= 3; i++) {
-          const copy = template.clone(true);
-          copy.position.x = building.baseX;
-          copy.position.z = (i - 1) * ROW_SPACING;
-          this.scene.add(copy);
-          this.registerSelectable(copy, `${building.name}_${i}`);
+    // Load and place each building
+    for (const item of sceneLayout) {
+      // Load model if not cached
+      if (!modelCache[item.type]) {
+        const loaded = await this.loadModel(buildingPaths[item.type]);
+        if (loaded) {
+          // Remove from scene - we only use it as a template for cloning
+          this.scene.remove(loaded);
+          modelCache[item.type] = loaded;
         }
+      }
+
+      const template = modelCache[item.type];
+      if (template) {
+        const model = template.clone(true);
+        model.position.set(item.x, 0, item.z);
+        model.rotation.y = item.rot * Math.PI / 180;
+        this.scene.add(model);
+        this.registerSelectable(model, item.name);
       }
     }
 
@@ -168,11 +244,13 @@ class LowPolyViewer {
     // Spawn reflective puddles on the road
     this.spawnPuddles();
 
-    // Generate ground grid
-    this.generateGroundGrid(20);
+    // Generate ground grid (smaller on mobile)
+    this.generateGroundGrid(this.isMobile ? 10 : 20);
 
-    // Spawn utility poles along the road
-    this.spawnUtilityPoles();
+    // Spawn utility poles along the road (skip on mobile - complex geometry)
+    if (!this.isMobile) {
+      this.spawnUtilityPoles();
+    }
 
     // Setup transform controls for scene composition
     this.setupTransformControls();
@@ -207,6 +285,8 @@ class LowPolyViewer {
       if (e.code === 'KeyY') this.setTransformMode('scale');
       if (e.code === 'Escape') this.deselectObject();
       if (e.code === 'KeyP') this.printSelectedPosition();
+      if (e.code === 'Delete' || e.code === 'Backspace') this.deleteSelectedObject();
+      if (e.code === 'KeyX' && e.shiftKey) this.exportRemainingBuildings();
 
       // Shift+C: Reset camera to origin
       if (e.shiftKey && e.code === 'KeyC') {
@@ -258,16 +338,17 @@ class LowPolyViewer {
   }
 
   setupRenderer() {
-    // Detect mobile for performance optimizations
+    // Detect mobile and iOS for performance optimizations
     this.isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    this.isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
 
     this.renderer = new THREE.WebGLRenderer({
-      antialias: !this.isMobile,  // Disable antialiasing on mobile for performance
+      antialias: true,  // Enable antialiasing on all devices
       powerPreference: 'high-performance'
     });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    // Lower pixel ratio on mobile for better performance
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.isMobile ? 1.5 : 2));
+    // Use device pixel ratio (capped at 2 for performance)
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     // sRGB encoding makes colors pop
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     // ACESFilmic tone mapping for moody wet look
@@ -281,6 +362,11 @@ class LowPolyViewer {
 
     if (this.isMobile) {
       console.log('Mobile detected - using performance optimizations');
+      // Hide hotkey hints on mobile (not useful for touch)
+      const controlsHint = document.getElementById('controls-hint');
+      if (controlsHint) {
+        controlsHint.style.display = 'none';
+      }
     }
   }
 
@@ -370,43 +456,55 @@ class LowPolyViewer {
       }
     }, true);  // capture phase
 
-    // Disable OrbitControls zoom - we'll handle it manually for infinite dolly
-    this.controls.enableZoom = false;
+    // Mobile: enable built-in pinch-to-zoom
+    // Desktop: disable zoom, use custom infinite dolly instead
+    if (this.isMobile) {
+      this.controls.enableZoom = true;
+      this.controls.zoomSpeed = 1.0;
+      // Touch controls: one finger rotate, two finger zoom/pan
+      this.controls.touches = {
+        ONE: THREE.TOUCH.ROTATE,
+        TWO: THREE.TOUCH.DOLLY_PAN
+      };
+      console.log('Mobile touch controls enabled: 1-finger rotate, 2-finger zoom/pan');
 
-    // Custom infinite zoom: dolly camera forward/backward in look direction
-    this.renderer.domElement.addEventListener('wheel', (event) => {
-      event.preventDefault();
+      // Add zoom buttons for mobile
+      this.setupMobileZoomButtons();
+    } else {
+      this.controls.enableZoom = false;
 
-      // Get camera's forward direction
-      const forward = new THREE.Vector3();
-      this.camera.getWorldDirection(forward);
+      // Custom infinite zoom: dolly camera forward/backward in look direction
+      this.renderer.domElement.addEventListener('wheel', (event) => {
+        event.preventDefault();
 
-      // Dolly speed: Ctrl = ultra-fine (10x more precise), normal = standard
-      const baseSpeed = event.ctrlKey ? 0.0005 : 0.005;
-      const dollyAmount = event.deltaY * baseSpeed;
+        // Get camera's forward direction
+        const forward = new THREE.Vector3();
+        this.camera.getWorldDirection(forward);
 
-      // Move both camera and target along the forward direction
-      const movement = forward.multiplyScalar(-dollyAmount);
-      this.camera.position.add(movement);
-      this.controls.target.add(movement);
-    }, { passive: false });
+        // Dolly speed: Ctrl = ultra-fine (10x more precise), normal = standard
+        const baseSpeed = event.ctrlKey ? 0.0005 : 0.005;
+        const dollyAmount = event.deltaY * baseSpeed;
+
+        // Move both camera and target along the forward direction
+        const movement = forward.multiplyScalar(-dollyAmount);
+        this.camera.position.add(movement);
+        this.controls.target.add(movement);
+      }, { passive: false });
+    }
   }
 
   setupTransformControls() {
+    // Skip on mobile - not useful for touch interaction
+    if (this.isMobile) {
+      console.log('Mobile detected - skipping transform controls');
+      this.transformControls = null;
+      return;
+    }
+
     try {
+      // Create TransformControls
       this.transformControls = new TransformControls(this.camera, this.renderer.domElement);
-      this.transformControls.setSize(1.0);  // Larger gizmo for visibility
-
-      // Add to scene
-      this.scene.add(this.transformControls);
-
-      // Ensure gizmo renders on top
-      this.transformControls.traverse((child) => {
-        if (child.material) {
-          child.material.depthTest = false;
-          child.renderOrder = 999;
-        }
-      });
+      this.transformControls.setSize(1.0);
 
       // Capture state before transform starts (for undo)
       this.transformControls.addEventListener('mouseDown', () => {
@@ -418,9 +516,14 @@ class LowPolyViewer {
         this.controls.enabled = !event.value;
       });
 
+      // Add the gizmo helper to scene (this is what renders the axes)
+      const gizmo = this.transformControls.getHelper();
+      this.scene.add(gizmo);
+
       console.log('Transform controls ready');
     } catch (err) {
       console.error('Failed to setup transform controls:', err);
+      this.transformControls = null;
     }
   }
 
@@ -465,13 +568,78 @@ class LowPolyViewer {
 
   deselectObject() {
     this.selectedObject = null;
-    this.transformControls.detach();
+    if (this.transformControls) {
+      this.transformControls.detach();
+    }
     console.log('Deselected');
+  }
+
+  deleteSelectedObject() {
+    if (!this.selectedObject) {
+      console.log('Nothing selected to delete');
+      return;
+    }
+
+    const name = this.selectedObject.name || 'unnamed object';
+
+    // Detach transform controls first
+    if (this.transformControls) {
+      this.transformControls.detach();
+    }
+
+    // Remove from selectableObjects array
+    const index = this.selectableObjects.indexOf(this.selectedObject);
+    if (index > -1) {
+      this.selectableObjects.splice(index, 1);
+    }
+
+    // Remove from scene
+    this.scene.remove(this.selectedObject);
+
+    // Dispose of geometry and materials to free memory
+    this.selectedObject.traverse((child) => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) {
+        if (Array.isArray(child.material)) {
+          child.material.forEach(m => m.dispose());
+        } else {
+          child.material.dispose();
+        }
+      }
+    });
+
+    console.log(`Deleted: ${name}`);
+    this.selectedObject = null;
+  }
+
+  exportRemainingBuildings() {
+    // Get all remaining selectable objects with positions
+    const remaining = this.selectableObjects
+      .filter(obj => obj.name && obj.name !== 'car')
+      .map(obj => ({
+        name: obj.name,
+        position: {
+          x: Math.round(obj.position.x * 100) / 100,
+          y: Math.round(obj.position.y * 100) / 100,
+          z: Math.round(obj.position.z * 100) / 100
+        },
+        rotation: Math.round(obj.rotation.y * 180 / Math.PI)
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    console.log('=== SCENE EXPORT (copy this) ===');
+    console.log(JSON.stringify(remaining, null, 2));
+    console.log('=== END ===');
   }
 
   onClickSelect(event) {
     // Ignore if Alt/Ctrl/Shift held (used for camera controls)
     if (event.altKey || event.ctrlKey || event.shiftKey) {
+      return;
+    }
+
+    // Ignore if transform controls not ready yet
+    if (!this.transformControls) {
       return;
     }
 
@@ -524,6 +692,110 @@ class LowPolyViewer {
   registerSelectable(object, name) {
     object.name = name || object.name || 'object';
     this.selectableObjects.push(object);
+  }
+
+  // Mobile zoom buttons and UI toggle
+  setupMobileZoomButtons() {
+    // Container for mobile controls (bottom right)
+    const container = document.createElement('div');
+    container.id = 'mobile-controls';
+    container.style.cssText = `
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      z-index: 1000;
+    `;
+
+    // Button style
+    const btnStyle = `
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      border: none;
+      background: rgba(0,0,0,0.6);
+      color: white;
+      font-size: 24px;
+      font-weight: bold;
+      cursor: pointer;
+      touch-action: manipulation;
+      user-select: none;
+    `;
+
+    // Zoom In button
+    const zoomIn = document.createElement('button');
+    zoomIn.textContent = '+';
+    zoomIn.style.cssText = btnStyle;
+    zoomIn.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      this.mobileZoom(1);
+    });
+    zoomIn.addEventListener('touchend', () => this.stopMobileZoom());
+
+    // Zoom Out button
+    const zoomOut = document.createElement('button');
+    zoomOut.textContent = '-';
+    zoomOut.style.cssText = btnStyle;
+    zoomOut.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      this.mobileZoom(-1);
+    });
+    zoomOut.addEventListener('touchend', () => this.stopMobileZoom());
+
+    // UI Toggle button - just hide/show, don't open menus
+    const uiToggle = document.createElement('button');
+    uiToggle.innerHTML = '&#128065;'; // eye icon
+    uiToggle.style.cssText = btnStyle;
+    uiToggle.style.fontSize = '20px';
+    this.uiVisible = true;
+    uiToggle.addEventListener('click', () => {
+      this.uiVisible = !this.uiVisible;
+      // Toggle visibility of all UI elements (keeps state, just hides)
+      const uiElements = [
+        'menu-toggle', 'scene-panel', 'building-toggle', 'building-panel',
+        'scene-menu', 'building-menu'
+      ];
+      uiElements.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.visibility = this.uiVisible ? 'visible' : 'hidden';
+      });
+      // Also hide/show zoom buttons
+      zoomIn.style.visibility = this.uiVisible ? 'visible' : 'hidden';
+      zoomOut.style.visibility = this.uiVisible ? 'visible' : 'hidden';
+      uiToggle.style.background = this.uiVisible ? 'rgba(0,0,0,0.6)' : 'rgba(100,0,0,0.6)';
+    });
+
+    container.appendChild(zoomIn);
+    container.appendChild(zoomOut);
+    container.appendChild(uiToggle);
+    document.body.appendChild(container);
+
+    // Zoom animation state
+    this.mobileZoomDirection = 0;
+    this.mobileZoomInterval = null;
+  }
+
+  mobileZoom(direction) {
+    this.mobileZoomDirection = direction;
+    if (this.mobileZoomInterval) return;
+
+    this.mobileZoomInterval = setInterval(() => {
+      const forward = new THREE.Vector3();
+      this.camera.getWorldDirection(forward);
+      const speed = 0.04;  // Very slow zoom
+      this.camera.position.addScaledVector(forward, speed * this.mobileZoomDirection);
+      this.controls.target.addScaledVector(forward, speed * this.mobileZoomDirection);
+    }, 16);
+  }
+
+  stopMobileZoom() {
+    this.mobileZoomDirection = 0;
+    if (this.mobileZoomInterval) {
+      clearInterval(this.mobileZoomInterval);
+      this.mobileZoomInterval = null;
+    }
   }
 
   // Scene Management Methods
@@ -1652,6 +1924,13 @@ class LowPolyViewer {
 
   // Spawn multiple puddles around the scene
   spawnPuddles() {
+    // Skip puddles on mobile - complex materials cause issues
+    if (this.isMobile) {
+      console.log('Mobile detected - skipping puddles');
+      this.puddles = [];
+      return;
+    }
+
     console.log('Spawning puddles... skyboxCubemap:', this.skyboxCubemap ? 'exists' : 'null');
 
     // Clear existing puddles
@@ -1854,15 +2133,17 @@ class LowPolyViewer {
   }
 
   // Load stylized cubemap skybox
-  loadSkybox(basePath) {
+  loadSkybox(basePath, ext = 'webp') {
     return new Promise((resolve, reject) => {
       const loader = new THREE.CubeTextureLoader();
       loader.setPath(basePath);
 
+      const files = [`px.${ext}`, `nx.${ext}`, `py.${ext}`, `ny.${ext}`, `pz.${ext}`, `nz.${ext}`];
+
       loader.load(
-        ['px.webp', 'nx.webp', 'py.webp', 'ny.webp', 'pz.webp', 'nz.webp'],
+        files,
         (cubemap) => {
-          console.log('Skybox cubemap loaded');
+          console.log('Skybox cubemap loaded:', ext);
           resolve(cubemap);
         },
         undefined,
@@ -3713,6 +3994,15 @@ class LowPolyViewer {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  // Show error on screen for mobile debugging
+  showError(msg) {
+    console.error(msg);
+    const div = document.createElement('div');
+    div.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:red;color:white;padding:20px;z-index:9999;max-width:80%;word-wrap:break-word;';
+    div.textContent = msg;
+    document.body.appendChild(div);
   }
 
   hideLoadingScreen() {

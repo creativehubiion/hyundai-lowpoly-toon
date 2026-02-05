@@ -247,10 +247,8 @@ class LowPolyViewer {
     // Generate ground grid (smaller on mobile)
     this.generateGroundGrid(this.isMobile ? 10 : 20);
 
-    // Spawn utility poles along the road (skip on mobile - complex geometry)
-    if (!this.isMobile) {
-      this.spawnUtilityPoles();
-    }
+    // Spawn utility poles along the road
+    this.spawnUtilityPoles();
 
     // Setup transform controls for scene composition
     this.setupTransformControls();
@@ -1924,13 +1922,6 @@ class LowPolyViewer {
 
   // Spawn multiple puddles around the scene
   spawnPuddles() {
-    // Skip puddles on mobile - complex materials cause issues
-    if (this.isMobile) {
-      console.log('Mobile detected - skipping puddles');
-      this.puddles = [];
-      return;
-    }
-
     console.log('Spawning puddles... skyboxCubemap:', this.skyboxCubemap ? 'exists' : 'null');
 
     // Clear existing puddles

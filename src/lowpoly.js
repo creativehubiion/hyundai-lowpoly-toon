@@ -229,6 +229,9 @@ class LowPolyViewer {
       this.registerSelectable(this.car, 'car');
     }
 
+    // Setup road reflection camera BEFORE roads are created
+    this.setupRoadReflectionCamera();
+
     // Road System 1 (disabled) - Procedural generation with collision detection
     // await this.spawnProceduralRoadSystem1(100);
 
@@ -268,9 +271,12 @@ class LowPolyViewer {
     // Hide loading screen
     this.hideLoadingScreen();
 
-    // Capture static puddle reflections (one-time, after everything loads)
+    // Capture static reflections (one-time, after everything loads)
     // Use setTimeout to ensure all models are fully rendered
-    setTimeout(() => this.captureStaticPuddleReflections(), 100);
+    setTimeout(() => {
+      this.captureStaticPuddleReflections();
+      this.captureRoadReflections();
+    }, 100);
 
     // Start render loop
     this.animate();
@@ -1828,6 +1834,55 @@ class LowPolyViewer {
     }
   }
 
+  // Setup CubeCamera for road reflections (single snapshot, not real-time)
+  setupRoadReflectionCamera() {
+    try {
+      // Resolution Cap: 256x256 for performance
+      const cubeRenderTarget = new THREE.WebGLCubeRenderTarget(256, {
+        format: THREE.RGBAFormat,
+        generateMipmaps: true,
+        minFilter: THREE.LinearMipmapLinearFilter
+      });
+
+      this.roadCubeCamera = new THREE.CubeCamera(0.1, 200, cubeRenderTarget);
+      this.roadCubeCamera.position.set(0, 0.3, -25); // Low position for road perspective
+      this.scene.add(this.roadCubeCamera);
+
+      // Flag for single snapshot capture
+      this.roadReflectionCaptured = false;
+
+      console.log('Road reflection CubeCamera ready (256x256, single snapshot)');
+      return cubeRenderTarget.texture;
+    } catch (error) {
+      console.warn('Road CubeCamera failed:', error);
+      this.roadCubeCamera = null;
+      return null;
+    }
+  }
+
+  // Capture road reflections once (called after scene loads)
+  captureRoadReflections() {
+    if (!this.roadCubeCamera || this.roadReflectionCaptured) return;
+
+    console.log('Capturing road building reflections (single snapshot)...');
+
+    // Hide roads during capture
+    if (this.roadMeshes) {
+      this.roadMeshes.forEach(mesh => mesh.visible = false);
+    }
+
+    // Capture buildings reflection
+    this.roadCubeCamera.update(this.renderer, this.scene);
+
+    // Restore road visibility
+    if (this.roadMeshes) {
+      this.roadMeshes.forEach(mesh => mesh.visible = true);
+    }
+
+    this.roadReflectionCaptured = true;
+    console.log('Road reflections captured (no further updates)');
+  }
+
   // Capture static puddle reflections (call once after scene loads)
   captureStaticPuddleReflections() {
     if (!this.puddleCubeCamera || this.puddleReflectionCaptured) return;
@@ -1953,6 +2008,119 @@ class LowPolyViewer {
     });
 
     console.log(`Spawned ${this.puddles.length} puddles`);
+  }
+
+  // Boost texture contrast (for road stripes visibility)
+  boostTextureContrast(texture, contrast = 1.5) {
+    if (!texture || !texture.image) return null;
+
+    try {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = texture.image.width || 512;
+      canvas.height = texture.image.height || 512;
+
+      // Draw original texture
+      ctx.drawImage(texture.image, 0, 0, canvas.width, canvas.height);
+
+      // Get image data and boost contrast
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+
+      for (let i = 0; i < data.length; i += 4) {
+        // Apply contrast: (color - 128) * contrast + 128
+        data[i] = Math.max(0, Math.min(255, (data[i] - 128) * contrast + 128));
+        data[i + 1] = Math.max(0, Math.min(255, (data[i + 1] - 128) * contrast + 128));
+        data[i + 2] = Math.max(0, Math.min(255, (data[i + 2] - 128) * contrast + 128));
+      }
+
+      ctx.putImageData(imageData, 0, 0);
+
+      const newTexture = new THREE.CanvasTexture(canvas);
+      newTexture.wrapS = texture.wrapS;
+      newTexture.wrapT = texture.wrapT;
+      newTexture.repeat.copy(texture.repeat);
+      newTexture.colorSpace = THREE.SRGBColorSpace;
+      console.log('Road texture contrast boosted by', contrast);
+      return newTexture;
+    } catch (e) {
+      console.warn('Could not boost texture contrast:', e);
+      return null;
+    }
+  }
+
+  // Create procedural noise bump map for road "crunchy" texture
+  createRoadBumpMap() {
+    const size = 512;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+
+    // Start with medium gray (neutral bump)
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, size, size);
+
+    const imageData = ctx.getImageData(0, 0, size, size);
+    const data = imageData.data;
+
+    // Add multi-scale noise for realistic asphalt texture
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const i = (y * size + x) * 4;
+
+        // Fine grain noise (small pebbles)
+        const fineNoise = (Math.random() - 0.5) * 60;
+
+        // Medium noise (aggregate texture)
+        const medNoise = (Math.sin(x * 0.3) * Math.cos(y * 0.3) + Math.random() - 0.5) * 30;
+
+        // Coarse noise (larger surface variation)
+        const coarseNoise = (Math.sin(x * 0.05 + Math.random()) * Math.cos(y * 0.05)) * 20;
+
+        const totalNoise = fineNoise + medNoise + coarseNoise;
+        const value = Math.max(0, Math.min(255, 128 + totalNoise));
+
+        data[i] = value;
+        data[i + 1] = value;
+        data[i + 2] = value;
+      }
+    }
+    ctx.putImageData(imageData, 0, 0);
+
+    // Add some random darker pits (tar patches, worn spots)
+    for (let i = 0; i < 50; i++) {
+      const x = Math.random() * size;
+      const y = Math.random() * size;
+      const r = Math.random() * 8 + 2;
+      const gradient = ctx.createRadialGradient(x, y, 0, x, y, r);
+      gradient.addColorStop(0, 'rgba(40,40,40,0.5)');
+      gradient.addColorStop(1, 'rgba(128,128,128,0)');
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = gradient;
+      ctx.fill();
+    }
+
+    // Add some lighter bumps (pebbles sticking up)
+    for (let i = 0; i < 100; i++) {
+      const x = Math.random() * size;
+      const y = Math.random() * size;
+      const r = Math.random() * 3 + 1;
+      const gradient = ctx.createRadialGradient(x, y, 0, x, y, r);
+      gradient.addColorStop(0, 'rgba(200,200,200,0.6)');
+      gradient.addColorStop(1, 'rgba(128,128,128,0)');
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = gradient;
+      ctx.fill();
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(1, 4);  // Large organic patches, not tight grid
+    return texture;
   }
 
   // Create procedural noise texture for road
@@ -2825,15 +2993,27 @@ class LowPolyViewer {
           if (node.isMesh) meshes.push(node);
         });
 
+        // Create shared bump map for all road meshes
+        const roadBumpMap = this.createRoadBumpMap();
+
+        // Use road reflection camera if available, fallback to skybox
+        const roadEnvMap = this.roadCubeCamera
+          ? this.roadCubeCamera.renderTarget.texture
+          : this.skyboxCubemap;
+
         meshes.forEach((node) => {
           const origMat = node.material;
 
-          // Use MeshPhongMaterial for specular wet highlights
-          const wetRoadMat = new THREE.MeshPhongMaterial({
-            color: 0x999999,           // Damp tint - darkens texture
-            specular: 0x444444,        // Specular glint for wet look
-            shininess: 30,             // Moderate shininess
-            side: THREE.DoubleSide
+          // Use MeshStandardMaterial for wet reflective look with building reflections
+          const wetRoadMat = new THREE.MeshStandardMaterial({
+            color: 0xffffff,           // White - texture shows at full color
+            roughness: 0.1,            // Lower = more wet/shiny
+            metalness: 0.38,           // Increased metalness
+            side: THREE.DoubleSide,
+            bumpMap: roadBumpMap,      // Noise texture for crunchy asphalt look
+            bumpScale: 0.15,           // More visible asphalt texture
+            envMap: roadEnvMap,        // Building reflections
+            envMapIntensity: 1.9       // Increased reflections
           });
 
           // Preserve original texture map from GLB
@@ -2845,6 +3025,15 @@ class LowPolyViewer {
           node.material = wetRoadMat;
           node.receiveShadow = true;
           node.castShadow = false;
+
+          // Put roads on layer 1 so reflection camera can ignore them
+          node.layers.set(1);
+          // Also enable layer 0 so main camera can see them
+          node.layers.enable(0);
+
+          // Track road meshes for reflection updates
+          if (!this.roadMeshes) this.roadMeshes = [];
+          this.roadMeshes.push(node);
 
           const outline = this.createOutline(node, 0.03);
           node.add(outline);

@@ -498,6 +498,18 @@ class LowPolyViewer {
       shareBtn.addEventListener('click', () => this.shareScene());
     }
 
+    // Push to GitHub button
+    const pushBtn = document.getElementById('push-github-btn');
+    if (pushBtn) {
+      pushBtn.addEventListener('click', () => this.pushToGitHub());
+    }
+
+    // Clear GitHub token button
+    const clearTokenBtn = document.getElementById('clear-token-btn');
+    if (clearTokenBtn) {
+      clearTokenBtn.addEventListener('click', () => this.clearGitHubToken());
+    }
+
     // Render initial list
     this.renderSceneList();
   }
@@ -575,7 +587,20 @@ class LowPolyViewer {
   captureSceneState() {
     const state = {
       transforms: {},
-      spawned: [] // Track dynamically spawned objects
+      spawned: [], // Track dynamically spawned objects
+      camera: {
+        position: {
+          x: this.camera.position.x,
+          y: this.camera.position.y,
+          z: this.camera.position.z
+        },
+        target: {
+          x: this.controls.target.x,
+          y: this.controls.target.y,
+          z: this.controls.target.z
+        },
+        zoom: this.camera.zoom
+      }
     };
     this.selectableObjects.forEach(obj => {
       state.transforms[obj.name] = {
@@ -631,6 +656,22 @@ class LowPolyViewer {
         obj.scale.set(data.scale.x, data.scale.y, data.scale.z);
       }
     });
+
+    // Restore camera position and target if available
+    if (state.camera) {
+      const cam = state.camera;
+      if (cam.position) {
+        this.camera.position.set(cam.position.x, cam.position.y, cam.position.z);
+      }
+      if (cam.target) {
+        this.controls.target.set(cam.target.x, cam.target.y, cam.target.z);
+      }
+      if (cam.zoom !== undefined) {
+        this.camera.zoom = cam.zoom;
+        this.camera.updateProjectionMatrix();
+      }
+      this.controls.update();
+    }
   }
 
   saveScene(name) {
@@ -780,6 +821,110 @@ class LowPolyViewer {
     }
 
     return false;
+  }
+
+  // GitHub integration for pushing scene presets
+  getGitHubToken() {
+    return localStorage.getItem('github_token');
+  }
+
+  setGitHubToken(token) {
+    if (token) {
+      localStorage.setItem('github_token', token);
+    } else {
+      localStorage.removeItem('github_token');
+    }
+  }
+
+  async pushToGitHub() {
+    const token = this.getGitHubToken();
+    if (!token) {
+      const newToken = prompt(
+        'Enter your GitHub Personal Access Token:\n\n' +
+        'Create one at: https://github.com/settings/tokens/new\n' +
+        'Required scope: "repo" (Full control of private repositories)\n\n' +
+        'The token will be stored locally in your browser.'
+      );
+      if (!newToken) {
+        alert('GitHub token is required to push changes.');
+        return false;
+      }
+      this.setGitHubToken(newToken);
+      return this.pushToGitHub(); // Retry with new token
+    }
+
+    const owner = 'creativehubiion';
+    const repo = 'hyundai-lowpoly-toon';
+    const path = 'assets/presets/game-scene-1.json';
+    const branch = 'master';
+
+    try {
+      // Capture current scene state
+      const state = this.captureSceneState();
+      const content = JSON.stringify(state, null, 2);
+      const contentBase64 = btoa(unescape(encodeURIComponent(content)));
+
+      // Get current file SHA (required for updates)
+      const getFileResponse = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${branch}`,
+        {
+          headers: {
+            'Authorization': `token ${token}`,
+            'Accept': 'application/vnd.github.v3+json'
+          }
+        }
+      );
+
+      let sha = null;
+      if (getFileResponse.ok) {
+        const fileData = await getFileResponse.json();
+        sha = fileData.sha;
+      }
+
+      // Push the update
+      const updateResponse = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
+        {
+          method: 'PUT',
+          headers: {
+            'Authorization': `token ${token}`,
+            'Accept': 'application/vnd.github.v3+json',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            message: `Update scene preset (camera + objects)\n\nPushed from Low Poly Toon Viewer`,
+            content: contentBase64,
+            sha: sha,
+            branch: branch
+          })
+        }
+      );
+
+      if (updateResponse.ok) {
+        alert('Scene pushed to GitHub successfully!\n\nThe preset will update on the live site after GitHub Pages rebuilds (usually 1-2 minutes).');
+        console.log('Scene pushed to GitHub');
+        return true;
+      } else {
+        const error = await updateResponse.json();
+        if (updateResponse.status === 401) {
+          // Token invalid, clear it and retry
+          this.setGitHubToken(null);
+          alert('GitHub token is invalid or expired. Please enter a new one.');
+          return this.pushToGitHub();
+        }
+        throw new Error(error.message || 'Failed to push to GitHub');
+      }
+    } catch (err) {
+      console.error('GitHub push failed:', err);
+      alert(`Failed to push to GitHub:\n${err.message}`);
+      return false;
+    }
+  }
+
+  // Clear stored GitHub token
+  clearGitHubToken() {
+    this.setGitHubToken(null);
+    alert('GitHub token cleared. You will be prompted for a new token on next push.');
   }
 
   // Create a single street light pole (procedural geometry)

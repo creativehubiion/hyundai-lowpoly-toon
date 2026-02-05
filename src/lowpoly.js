@@ -162,8 +162,17 @@ class LowPolyViewer {
     // Road System 3 - Spine-and-Branch generator
     await this.spawnSpineAndBranchSystem3();
 
+    // Setup CubeCamera for real-time puddle reflections
+    this.setupPuddleCubeCamera();
+
+    // Spawn reflective puddles on the road
+    this.spawnPuddles();
+
     // Generate ground grid
     this.generateGroundGrid(20);
+
+    // Spawn utility poles along the road
+    this.spawnUtilityPoles();
 
     // Setup transform controls for scene composition
     this.setupTransformControls();
@@ -182,6 +191,10 @@ class LowPolyViewer {
 
     // Hide loading screen
     this.hideLoadingScreen();
+
+    // Capture static puddle reflections (one-time, after everything loads)
+    // Use setTimeout to ensure all models are fully rendered
+    setTimeout(() => this.captureStaticPuddleReflections(), 100);
 
     // Start render loop
     this.animate();
@@ -253,8 +266,9 @@ class LowPolyViewer {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     // sRGB encoding makes colors pop
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    // No tone mapping for crisp toon look
-    this.renderer.toneMapping = THREE.NoToneMapping;
+    // ACESFilmic tone mapping for moody wet look
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 0.85;  // Crush blacks for high-contrast cinematic look
     // Enable shadow maps - PCFSoftShadowMap for smooth curves
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -371,21 +385,35 @@ class LowPolyViewer {
   }
 
   setupTransformControls() {
-    this.transformControls = new TransformControls(this.camera, this.renderer.domElement);
-    this.transformControls.setSize(0.75);
-    this.scene.add(this.transformControls);
+    try {
+      this.transformControls = new TransformControls(this.camera, this.renderer.domElement);
+      this.transformControls.setSize(1.0);  // Larger gizmo for visibility
 
-    // Capture state before transform starts (for undo)
-    this.transformControls.addEventListener('mouseDown', () => {
-      this.pushUndoState();
-    });
+      // Add to scene
+      this.scene.add(this.transformControls);
 
-    // Disable orbit controls while transforming
-    this.transformControls.addEventListener('dragging-changed', (event) => {
-      this.controls.enabled = !event.value;
-    });
+      // Ensure gizmo renders on top
+      this.transformControls.traverse((child) => {
+        if (child.material) {
+          child.material.depthTest = false;
+          child.renderOrder = 999;
+        }
+      });
 
-    console.log('Transform controls ready');
+      // Capture state before transform starts (for undo)
+      this.transformControls.addEventListener('mouseDown', () => {
+        this.pushUndoState();
+      });
+
+      // Disable orbit controls while transforming
+      this.transformControls.addEventListener('dragging-changed', (event) => {
+        this.controls.enabled = !event.value;
+      });
+
+      console.log('Transform controls ready');
+    } catch (err) {
+      console.error('Failed to setup transform controls:', err);
+    }
   }
 
   pushUndoState() {
@@ -416,9 +444,15 @@ class LowPolyViewer {
   }
 
   selectObject(object) {
+    if (!this.transformControls) {
+      console.error('Transform controls not initialized!');
+      return;
+    }
     this.selectedObject = object;
     this.transformControls.attach(object);
-    console.log(`Selected: ${object.name || 'unnamed'}`);
+    this.transformControls.visible = true;
+    console.log(`Selected: ${object.name || 'unnamed'}, transform attached:`, this.transformControls.object === object);
+    console.log('Transform controls visible:', this.transformControls.visible, 'in scene:', this.transformControls.parent === this.scene);
   }
 
   deselectObject() {
@@ -428,28 +462,44 @@ class LowPolyViewer {
   }
 
   onClickSelect(event) {
+    // Ignore if Alt/Ctrl/Shift held (used for camera controls)
+    if (event.altKey || event.ctrlKey || event.shiftKey) {
+      return;
+    }
+
     // Calculate mouse position in normalized device coordinates
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
-    // Raycast
+    console.log(`Click at (${this.mouse.x.toFixed(2)}, ${this.mouse.y.toFixed(2)}), selectables: ${this.selectableObjects.length}`);
+
+    // Raycast against all scene objects, not just selectables
     this.raycaster.setFromCamera(this.mouse, this.camera);
-    const intersects = this.raycaster.intersectObjects(this.selectableObjects, true);
+    const intersects = this.raycaster.intersectObjects(this.scene.children, true);
+
+    console.log(`Raycast hits: ${intersects.length}`);
 
     if (intersects.length > 0) {
-      // Find the root selectable parent
-      let target = intersects[0].object;
-      while (target.parent && !this.selectableObjects.includes(target)) {
-        target = target.parent;
-      }
-      if (this.selectableObjects.includes(target)) {
-        this.selectObject(target);
-        return;
+      // Walk up to find a selectable parent
+      for (const hit of intersects) {
+        let target = hit.object;
+        console.log(`Hit: ${target.name || target.type}, distance: ${hit.distance.toFixed(2)}`);
+
+        // Walk up the parent hierarchy to find a selectable root
+        while (target) {
+          if (this.selectableObjects.includes(target)) {
+            console.log(`Found selectable: ${target.name}`);
+            this.selectObject(target);
+            return;
+          }
+          target = target.parent;
+        }
       }
     }
 
     // Clicked outside any selectable object - deselect
+    console.log('No selectable hit, deselecting');
     this.deselectObject();
   }
 
@@ -971,46 +1021,61 @@ class LowPolyViewer {
       }
     }
 
-    // If no URL scene and on GitHub Pages, load scenes from GitHub
-    const isGitHubPages = window.location.hostname.includes('github.io');
-    if (isGitHubPages) {
-      try {
-        // Try loading all scenes first (includes saved scenes and camera views)
-        const scenesPath = getAssetPath('presets/scenes.json');
-        console.log('Loading scenes from:', scenesPath);
-        const scenesResponse = await fetch(scenesPath);
+    // Always load preset scene (both localhost and GitHub Pages)
+    try {
+      // Try loading all scenes first (includes saved scenes and camera views)
+      const scenesPath = getAssetPath('presets/scenes.json');
+      console.log('Loading scenes from:', scenesPath);
+      const scenesResponse = await fetch(scenesPath);
+      const contentType = scenesResponse.headers.get('content-type');
 
-        if (scenesResponse.ok) {
-          const allData = await scenesResponse.json();
+      // Only parse as JSON if it's actually JSON (not HTML fallback)
+      if (scenesResponse.ok && contentType && contentType.includes('application/json')) {
+        const allData = await scenesResponse.json();
 
-          // Load saved scenes into localStorage-equivalent
-          if (allData.savedScenes) {
+        // Load saved scenes (merge with localStorage on localhost)
+        if (allData.savedScenes) {
+          // On localhost, merge with existing localStorage scenes
+          const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+          if (isLocalhost) {
+            // Merge: localStorage scenes take priority, but add any from preset that don't exist
+            this.savedScenes = { ...allData.savedScenes, ...this.savedScenes };
+          } else {
             this.savedScenes = allData.savedScenes;
-            this.renderSceneList();
-            console.log('Loaded saved scenes from GitHub:', Object.keys(allData.savedScenes));
           }
-
-          // Apply current scene
-          if (allData.currentScene) {
-            await this.applySceneState(allData.currentScene);
-            console.log('Current scene loaded from GitHub');
-            return true;
-          }
+          this.renderSceneList();
+          console.log('Loaded saved scenes:', Object.keys(this.savedScenes));
         }
 
-        // Fallback to simple preset
-        const presetPath = getAssetPath('presets/game-scene-1.json');
-        console.log('Falling back to preset:', presetPath);
-        const response = await fetch(presetPath);
-        if (response.ok) {
-          const state = await response.json();
-          await this.applySceneState(state);
-          console.log('Preset scene loaded successfully');
+        // Apply current scene
+        if (allData.currentScene) {
+          await this.applySceneState(allData.currentScene);
+          console.log('Current scene loaded from preset');
           return true;
         }
-      } catch (err) {
-        console.error('Failed to load scenes from GitHub:', err);
       }
+    } catch (err) {
+      console.warn('scenes.json not available:', err.message);
+    }
+
+    // Fallback to simple preset (game-scene-1.json)
+    try {
+      const presetPath = getAssetPath('presets/game-scene-1.json');
+      console.log('Loading default preset:', presetPath);
+      const response = await fetch(presetPath);
+      const contentType = response.headers.get('content-type');
+
+      if (response.ok && contentType && contentType.includes('application/json')) {
+        const state = await response.json();
+        await this.applySceneState(state);
+        this.currentSceneName = 'Game Scene 1';
+        this.renderSceneList();
+        this.renderCameraViewList();
+        console.log('Game Scene 1 loaded as default');
+        return true;
+      }
+    } catch (err) {
+      console.error('Failed to load preset scene:', err);
     }
 
     return false;
@@ -1217,6 +1282,383 @@ class LowPolyViewer {
     console.log('Street lights spawned');
   }
 
+  // Spawn utility poles with sagging cables along the road
+  spawnUtilityPoles() {
+    if (!this.utilityPoles) this.utilityPoles = [];
+
+    // Clear existing
+    this.utilityPoles.forEach(p => this.scene.remove(p));
+    this.utilityPoles = [];
+
+    const poleSpacing = 20;  // Every 20 units
+    const roadLength = 80;   // Approximate road length
+    const sideOffset = 3.5;  // Distance from road center
+
+    // Create poles along one side of the road
+    const polePositions = [];
+    for (let z = 0; z > -roadLength; z -= poleSpacing) {
+      polePositions.push({ x: sideOffset, z: z });
+    }
+
+    // Spawn each pole
+    polePositions.forEach((pos, i) => {
+      const pole = this.createUtilityPole(pos.x, pos.z);
+      this.utilityPoles.push(pole);
+
+      // Connect cables to next pole
+      if (i < polePositions.length - 1) {
+        const nextPos = polePositions[i + 1];
+        this.createSaggingCables(pos.x, pos.z, nextPos.x, nextPos.z);
+      }
+    });
+
+    console.log(`Spawned ${this.utilityPoles.length} utility poles with cables`);
+  }
+
+  // Create a single utility pole
+  createUtilityPole(x, z) {
+    const group = new THREE.Group();
+
+    // Main pole - tall wooden/concrete cylinder
+    const poleGeo = new THREE.CylinderGeometry(0.08, 0.1, 8, 8);
+    const poleMat = new THREE.MeshToonMaterial({
+      color: 0x4a3c2a,  // Dark wood brown
+      gradientMap: this.sharedGradientMap
+    });
+    const pole = new THREE.Mesh(poleGeo, poleMat);
+    pole.position.y = 4;  // Half height
+    pole.castShadow = true;
+    pole.receiveShadow = true;
+    group.add(pole);
+
+    // Crossarm at top
+    const armGeo = new THREE.BoxGeometry(2.0, 0.1, 0.1);
+    const arm = new THREE.Mesh(armGeo, poleMat);
+    arm.position.y = 7.5;
+    group.add(arm);
+
+    // Small insulators on crossarm (where cables attach)
+    const insulatorGeo = new THREE.CylinderGeometry(0.03, 0.04, 0.15, 6);
+    const insulatorMat = new THREE.MeshToonMaterial({
+      color: 0x333333,
+      gradientMap: this.sharedGradientMap
+    });
+    [-0.7, 0, 0.7].forEach(offset => {
+      const insulator = new THREE.Mesh(insulatorGeo, insulatorMat);
+      insulator.position.set(offset, 7.6, 0);
+      group.add(insulator);
+    });
+
+    // Add outline to pole
+    const poleOutline = this.createOutline(pole, 0.015);
+    pole.add(poleOutline);
+
+    group.position.set(x, 0, z);
+    this.scene.add(group);
+
+    return group;
+  }
+
+  // Create 3 sagging cables between two poles using catenary curve
+  createSaggingCables(x1, z1, x2, z2) {
+    const cableMat = new THREE.LineBasicMaterial({
+      color: 0x000000  // Pure black for clear silhouettes against sky
+    });
+
+    const cableHeight = 7.6;           // Height at crossarm
+    const cableOffsets = [-0.7, 0, 0.7];  // 3 wires matching insulator positions
+    const sagAmount = 1.2;             // Catenary sag depth
+
+    cableOffsets.forEach((offset) => {
+      const points = [];
+      const segments = 24;  // Smooth curve
+
+      for (let j = 0; j <= segments; j++) {
+        const t = j / segments;
+
+        // Interpolate position along cable path
+        const x = x1 + offset;  // X stays constant (wires run parallel to road)
+        const z = z1 + (z2 - z1) * t;
+
+        // Catenary-like sag using parabolic approximation
+        // Deepest at t=0.5 (middle of span)
+        const sag = sagAmount * 4 * t * (1 - t);  // Parabola: 0 at ends, max at middle
+        const y = cableHeight - sag;
+
+        points.push(new THREE.Vector3(x, y, z));
+      }
+
+      const geometry = new THREE.BufferGeometry().setFromPoints(points);
+      const cable = new THREE.Line(geometry, cableMat);
+      this.scene.add(cable);
+      this.utilityPoles.push(cable);  // Track for cleanup
+    });
+  }
+
+  // Create procedural alpha map texture for soft, organic puddle edges
+  createPuddleAlphaMap(seed = 0) {
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+
+    // Seeded random for consistent shapes
+    const seededRandom = () => {
+      seed = (seed * 9301 + 49297) % 233280;
+      return seed / 233280;
+    };
+
+    // Start with black (transparent)
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, size, size);
+
+    // Create organic blob using multiple overlapping radial gradients
+    const centerX = size / 2;
+    const centerY = size / 2;
+    const baseRadius = size * 0.35;
+
+    // Draw main blob with irregular edges using multiple offset circles
+    const numBlobs = 5 + Math.floor(seededRandom() * 4);
+    for (let i = 0; i < numBlobs; i++) {
+      const angle = (i / numBlobs) * Math.PI * 2 + seededRandom() * 0.5;
+      const offsetDist = seededRandom() * baseRadius * 0.3;
+      const blobX = centerX + Math.cos(angle) * offsetDist;
+      const blobY = centerY + Math.sin(angle) * offsetDist;
+      const blobRadius = baseRadius * (0.6 + seededRandom() * 0.5);
+
+      // Radial gradient for soft edges
+      const gradient = ctx.createRadialGradient(blobX, blobY, 0, blobX, blobY, blobRadius);
+      gradient.addColorStop(0, 'rgba(255,255,255,1)');
+      gradient.addColorStop(0.5, 'rgba(255,255,255,0.9)');
+      gradient.addColorStop(0.75, 'rgba(255,255,255,0.5)');
+      gradient.addColorStop(1, 'rgba(255,255,255,0)');
+
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(blobX, blobY, blobRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Add some smaller satellite blobs for more organic feel
+    const numSatellites = 2 + Math.floor(seededRandom() * 3);
+    for (let i = 0; i < numSatellites; i++) {
+      const angle = seededRandom() * Math.PI * 2;
+      const dist = baseRadius * (0.7 + seededRandom() * 0.4);
+      const satX = centerX + Math.cos(angle) * dist;
+      const satY = centerY + Math.sin(angle) * dist;
+      const satRadius = baseRadius * (0.2 + seededRandom() * 0.25);
+
+      const gradient = ctx.createRadialGradient(satX, satY, 0, satX, satY, satRadius);
+      gradient.addColorStop(0, 'rgba(255,255,255,0.8)');
+      gradient.addColorStop(0.6, 'rgba(255,255,255,0.4)');
+      gradient.addColorStop(1, 'rgba(255,255,255,0)');
+
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(satX, satY, satRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    return texture;
+  }
+
+  // Create procedural normal map for wavy water surface
+  createWaterNormalMap() {
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+
+    // Create normal map data (RGB encodes normal direction)
+    const imageData = ctx.createImageData(size, size);
+    const data = imageData.data;
+
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const idx = (y * size + x) * 4;
+
+        // Generate subtle wave pattern using sine waves
+        const wave1 = Math.sin(x * 0.15) * Math.cos(y * 0.12) * 0.3;
+        const wave2 = Math.sin(x * 0.08 + y * 0.1) * 0.2;
+        const wave3 = Math.sin(x * 0.2 - y * 0.15) * 0.15;
+        const combined = wave1 + wave2 + wave3;
+
+        // Normal map: R=X, G=Y, B=Z (pointing up)
+        // Flat surface normal is (0.5, 0.5, 1.0) in 0-255 range = (128, 128, 255)
+        const nx = 128 + combined * 40;  // Subtle X displacement
+        const ny = 128 + combined * 40;  // Subtle Y displacement
+        const nz = 255;                   // Z always pointing up
+
+        data[idx] = Math.max(0, Math.min(255, nx));
+        data[idx + 1] = Math.max(0, Math.min(255, ny));
+        data[idx + 2] = nz;
+        data[idx + 3] = 255;
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.needsUpdate = true;
+    return texture;
+  }
+
+  // Setup CubeCamera for static puddle reflections (one-time capture)
+  setupPuddleCubeCamera() {
+    // Create render target for cube camera (256x256 for performance)
+    const cubeRenderTarget = new THREE.WebGLCubeRenderTarget(256, {
+      format: THREE.RGBAFormat,
+      generateMipmaps: true,
+      minFilter: THREE.LinearMipmapLinearFilter
+    });
+
+    // Create cube camera positioned at average puddle height
+    this.puddleCubeCamera = new THREE.CubeCamera(0.1, 150, cubeRenderTarget);
+    this.puddleCubeCamera.position.set(0, 0.5, -25); // Near the car area, slightly elevated
+    this.scene.add(this.puddleCubeCamera);
+
+    // Create shared normal map for water distortion
+    this.waterNormalMap = this.createWaterNormalMap();
+
+    // Flag for static capture (buildings don't move, so capture once)
+    this.puddleReflectionCaptured = false;
+
+    console.log('Puddle CubeCamera ready (static mode)');
+    return cubeRenderTarget.texture;
+  }
+
+  // Capture static puddle reflections (call once after scene loads)
+  captureStaticPuddleReflections() {
+    if (!this.puddleCubeCamera || this.puddleReflectionCaptured) return;
+
+    console.log('Capturing static puddle reflections...');
+    console.log('  Buildings visible:', this.selectableObjects.length);
+
+    // Hide ground-level objects during capture (keeps buildings + sky)
+    if (this.puddles) this.puddles.forEach(p => p.visible = false);
+    if (this.groundTiles) this.groundTiles.forEach(t => t.visible = false);
+    if (this.roadPieces) this.roadPieces.forEach(r => r.visible = false);
+    if (this.gridHelper) this.gridHelper.visible = false;
+    if (this.streetLights) this.streetLights.forEach(l => l.visible = false);
+
+    // Ensure all buildings (selectableObjects) are visible
+    this.selectableObjects.forEach(obj => obj.visible = true);
+
+    // Position cube camera near the main action area
+    this.puddleCubeCamera.position.set(0, 0.3, -20);
+
+    // Render cube map (one-time capture)
+    this.puddleCubeCamera.update(this.renderer, this.scene);
+
+    // Restore visibility (except grid helper which stays hidden by default)
+    if (this.puddles) this.puddles.forEach(p => p.visible = true);
+    if (this.groundTiles) this.groundTiles.forEach(t => t.visible = true);
+    if (this.roadPieces) this.roadPieces.forEach(r => r.visible = true);
+    // gridHelper stays hidden - user can toggle with G key
+    if (this.streetLights) this.streetLights.forEach(l => l.visible = true);
+
+    // Mark as captured - no more updates needed
+    this.puddleReflectionCaptured = true;
+    console.log('Static puddle reflections captured (no further updates)');
+  }
+
+  // Spawn a single reflective puddle with alpha map for soft edges
+  spawnPuddle(x, z, scale = 1, rotationY = 0) {
+    // Use a plane geometry - shape controlled by alpha map
+    const geometry = new THREE.PlaneGeometry(2, 2);
+    geometry.rotateX(-Math.PI / 2); // Lie flat
+
+    // Create unique alpha map for this puddle
+    const alphaMap = this.createPuddleAlphaMap(Math.random() * 10000);
+
+    // Use CubeCamera reflection if available, fallback to skybox
+    const envMap = this.puddleCubeCamera
+      ? this.puddleCubeCamera.renderTarget.texture
+      : this.skyboxCubemap;
+
+    // High-reflectivity material with real-time reflections
+    // Multiply blending makes puddles "wet" the road beneath
+    const material = new THREE.MeshStandardMaterial({
+      color: 0x222222,           // Darker than road for contrast
+      envMap: envMap,
+      envMapIntensity: 4.0,      // Boosted for vivid reflections
+      roughness: 0,              // Perfect mirror for still water
+      metalness: 1.0,            // Full metallic for maximum reflection
+      normalMap: this.waterNormalMap,
+      normalScale: new THREE.Vector2(0.07, 0.07),  // Subtle ripples - calm but visible
+      transparent: true,
+      opacity: 0.4,              // See road markings through water
+      alphaMap: alphaMap,        // Soft organic edges
+      side: THREE.DoubleSide,
+      depthWrite: false          // Helps with transparency sorting
+    });
+
+    const puddle = new THREE.Mesh(geometry, material);
+
+    // Position just above road surface to avoid z-fighting
+    puddle.position.set(x, 0.02, z);
+    puddle.rotation.y = rotationY;
+    puddle.scale.set(scale, 1, scale);
+
+    // Shadows: receive but don't cast
+    puddle.castShadow = false;
+    puddle.receiveShadow = true;
+
+    // Ensure it renders after the road
+    puddle.renderOrder = 1;
+
+    // Mark as puddle (non-selectable)
+    puddle.userData.isPuddle = true;
+
+    this.scene.add(puddle);
+
+    // Track puddles for potential cleanup
+    if (!this.puddles) this.puddles = [];
+    this.puddles.push(puddle);
+
+    return puddle;
+  }
+
+  // Spawn multiple puddles around the scene
+  spawnPuddles() {
+    console.log('Spawning puddles... skyboxCubemap:', this.skyboxCubemap ? 'exists' : 'null');
+
+    // Clear existing puddles
+    if (this.puddles) {
+      this.puddles.forEach(p => this.scene.remove(p));
+      this.puddles = [];
+    }
+
+    // Puddle locations - near the car and along road in Game Scene 1
+    const puddleConfigs = [
+      // Near the car (z ~ -18)
+      { x: -0.5, z: -17, scale: 1.2, rot: Math.random() * Math.PI },
+      { x: 0.8, z: -19, scale: 0.8, rot: Math.random() * Math.PI },
+      { x: -1.2, z: -20, scale: 1.0, rot: Math.random() * Math.PI },
+
+      // Along the road spine
+      { x: 0.3, z: -23, scale: 0.7, rot: Math.random() * Math.PI },
+      { x: -0.8, z: -26, scale: 0.9, rot: Math.random() * Math.PI },
+      { x: 0.5, z: -30, scale: 1.1, rot: Math.random() * Math.PI },
+
+      // Near intersections
+      { x: 1.5, z: -33, scale: 0.6, rot: Math.random() * Math.PI },
+      { x: -1.0, z: -38, scale: 0.8, rot: Math.random() * Math.PI },
+    ];
+
+    puddleConfigs.forEach(config => {
+      const puddle = this.spawnPuddle(config.x, config.z, config.scale, config.rot);
+      console.log(`Puddle at (${config.x}, ${config.z}), scale: ${config.scale}`);
+    });
+
+    console.log(`Spawned ${this.puddles.length} puddles`);
+  }
+
   // Create procedural noise texture for road
   createAsphaltTexture() {
     const size = 256;
@@ -1225,29 +1667,29 @@ class LowPolyViewer {
     canvas.height = size;
     const ctx = canvas.getContext('2d');
 
-    // Base grey
-    ctx.fillStyle = '#4a4a4a';
+    // Dark charcoal base for damp wet asphalt look
+    ctx.fillStyle = '#1a1a1a';
     ctx.fillRect(0, 0, size, size);
 
-    // Add noise
+    // Add very subtle noise
     const imageData = ctx.getImageData(0, 0, size, size);
     const data = imageData.data;
     for (let i = 0; i < data.length; i += 4) {
-      const noise = (Math.random() - 0.5) * 30;
+      const noise = (Math.random() - 0.5) * 10;  // Minimal noise
       data[i] = Math.max(0, Math.min(255, data[i] + noise));
       data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + noise));
       data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + noise));
     }
     ctx.putImageData(imageData, 0, 0);
 
-    // Add some darker spots
-    for (let i = 0; i < 50; i++) {
+    // Add some subtle darker spots
+    for (let i = 0; i < 20; i++) {
       const x = Math.random() * size;
       const y = Math.random() * size;
-      const r = Math.random() * 8 + 2;
+      const r = Math.random() * 5 + 2;
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.15})`;
+      ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.2})`;
       ctx.fill();
     }
 
@@ -1423,12 +1865,12 @@ class LowPolyViewer {
     return gradientMap;
   }
 
-  // Road-specific gradient (darker for asphalt look)
+  // Road-specific gradient (nearly black for wet rain look)
   createRoadGradientMap() {
     const colors = new Uint8Array([
-      60, 60, 70, 255,     // Pixel 1: Dark asphalt shadow
-      100, 100, 110, 255,  // Pixel 2: Mid asphalt
-      160, 160, 170, 255   // Pixel 3: Light asphalt highlight
+      5, 5, 8, 255,        // Pixel 1: Nearly black shadow (#050508)
+      10, 10, 15, 255,     // Pixel 2: Very dark (#0a0a0f)
+      20, 20, 28, 255      // Pixel 3: Slightly lighter (#14141c)
     ]);
     const gradientMap = new THREE.DataTexture(colors, 3, 1, THREE.RGBAFormat);
     gradientMap.needsUpdate = true;
@@ -1686,25 +2128,25 @@ class LowPolyViewer {
           toonMat.emissiveIntensity = 0.15;
           console.log(`    -> Window material with reflections: ${node.name}`);
         } else if (isBody) {
-          // Car body: preserve original texture map
-          toonMat = new THREE.MeshToonMaterial({
-            gradientMap: gradientMap,
+          // Car body: light gray to avoid triggering bloom
+          toonMat = new THREE.MeshStandardMaterial({
+            color: 0xe0e0e0,       // Light gray - won't trigger bloom
+            metalness: 0.3,
+            roughness: 0.4,
             side: THREE.DoubleSide
           });
-          // Copy color
-          if (origMat.color) {
-            toonMat.color.copy(origMat.color);
+          // Subtle reflections only
+          if (this.skyboxCubemap) {
+            toonMat.envMap = this.skyboxCubemap;
+            toonMat.envMapIntensity = 0.5;  // Lowered to avoid bloom
           }
-          // IMPORTANT: Preserve texture map for paint details
+          // Preserve texture map for paint details
           if (origMat.map) {
             toonMat.map = origMat.map;
             console.log(`    -> Body with texture preserved: ${node.name}`);
           } else {
             console.log(`    -> Body (no texture): ${node.name}`);
           }
-          // Emissive for depth fix
-          toonMat.emissive.set(0x333333);
-          toonMat.emissiveIntensity = 0.15;
         } else if (isWheel) {
           // Wheels: preserve texture, darker emissive
           toonMat = new THREE.MeshToonMaterial({
@@ -1976,7 +2418,7 @@ class LowPolyViewer {
         if (node.isMesh) meshes.push(node);
       });
 
-      // Apply toon material and outlines
+      // Apply toon material with texture
       meshes.forEach((node) => {
         const toonMat = new THREE.MeshToonMaterial({
           gradientMap: this.sharedGradientMap,
@@ -2087,22 +2529,22 @@ class LowPolyViewer {
 
         meshes.forEach((node) => {
           const origMat = node.material;
-          const toonMat = new THREE.MeshToonMaterial({
-            gradientMap: this.sharedGradientMap,
+
+          // Use MeshPhongMaterial for specular wet highlights
+          const wetRoadMat = new THREE.MeshPhongMaterial({
+            color: 0x999999,           // Damp tint - darkens texture
+            specular: 0x444444,        // Specular glint for wet look
+            shininess: 30,             // Moderate shininess
             side: THREE.DoubleSide
           });
 
           // Preserve original texture map from GLB
           if (origMat.map) {
-            toonMat.map = origMat.map;
+            wetRoadMat.map = origMat.map;
           }
-          if (origMat.color) {
-            toonMat.color.copy(origMat.color);
-          }
-          toonMat.emissive.set(0x222222);
-          toonMat.emissiveIntensity = 0.1;
+
           node.geometry.computeVertexNormals();
-          node.material = toonMat;
+          node.material = wetRoadMat;
           node.receiveShadow = true;
           node.castShadow = false;
 
@@ -2883,6 +3325,7 @@ class LowPolyViewer {
 
     const instance = template.clone(true);
     instance.visible = true;
+
     instance.traverse((child) => { child.visible = true; });
 
     instance.scale.set(2, 2, 2);  // Scale up road pieces 2x
@@ -3145,25 +3588,24 @@ class LowPolyViewer {
         if (node.isMesh) {
           const origMat = node.material;
 
-          // Toon material with base color texture
           const toonMat = new THREE.MeshToonMaterial({
             gradientMap: gradientMap,
             side: THREE.DoubleSide
           });
 
-          // Apply loaded base color texture
           if (this.roadBaseColorMap) {
             toonMat.map = this.roadBaseColorMap;
           } else if (origMat.color) {
             toonMat.color.copy(origMat.color);
           }
 
-          // Light emissive to prevent dark patches
           toonMat.emissive.set(0x333333);
           toonMat.emissiveIntensity = 0.15;
 
           node.geometry.computeVertexNormals();
           node.material = toonMat;
+          node.receiveShadow = true;
+          node.castShadow = false;
 
           console.log(`  Road mesh: ${node.name}, textured: ${!!this.roadBaseColorMap}`);
         }

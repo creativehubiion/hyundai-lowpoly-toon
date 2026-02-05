@@ -709,8 +709,14 @@ class LowPolyViewer {
     }
   }
 
-  // Save current camera position as a named view
+  // Save current camera position as a named view (only when inside a scene)
   saveCameraView(name) {
+    // Only allow saving camera views when inside a custom scene
+    if (!this.currentSceneName) {
+      alert('Please save or load a scene first.\n\nCamera views are saved per-scene.');
+      return;
+    }
+
     if (!name) {
       name = prompt('Enter camera view name:', `View ${Object.keys(this.currentCameraViews || {}).length + 1}`);
       if (!name) return;
@@ -722,7 +728,12 @@ class LowPolyViewer {
 
     this.currentCameraViews[name] = this.captureCameraState();
     this.activeCameraView = name;
-    console.log(`Camera view saved: ${name}`);
+
+    // Auto-save to the current scene
+    this.savedScenes[this.currentSceneName] = this.captureSceneState();
+    localStorage.setItem('lowpoly_scenes', JSON.stringify(this.savedScenes));
+
+    console.log(`Camera view "${name}" saved to scene "${this.currentSceneName}"`);
     this.renderCameraViewList();
   }
 
@@ -743,6 +754,8 @@ class LowPolyViewer {
 
   // Delete a camera view
   deleteCameraView(name) {
+    if (!this.currentSceneName) return;
+
     if (this.currentCameraViews && this.currentCameraViews[name]) {
       delete this.currentCameraViews[name];
 
@@ -755,7 +768,11 @@ class LowPolyViewer {
         }
       }
 
-      console.log(`Camera view deleted: ${name}`);
+      // Auto-save to the current scene
+      this.savedScenes[this.currentSceneName] = this.captureSceneState();
+      localStorage.setItem('lowpoly_scenes', JSON.stringify(this.savedScenes));
+
+      console.log(`Camera view "${name}" deleted from scene "${this.currentSceneName}"`);
       this.renderCameraViewList();
     }
   }
@@ -763,7 +780,37 @@ class LowPolyViewer {
   // Render camera view list in UI
   renderCameraViewList() {
     const container = document.getElementById('camera-views-list');
+    const headerEl = document.getElementById('camera-views-header');
+    const saveCamBtn = document.getElementById('save-camera-btn');
     if (!container) return;
+
+    // Update header to show current scene
+    if (headerEl) {
+      if (this.currentSceneName) {
+        headerEl.innerHTML = `Camera Views <span style="color:#3498db;">(${this.currentSceneName})</span>`;
+      } else {
+        headerEl.innerHTML = 'Camera Views <span style="color:#666;">(no scene)</span>';
+      }
+    }
+
+    // Enable/disable save button based on whether a scene is selected
+    if (saveCamBtn) {
+      if (this.currentSceneName) {
+        saveCamBtn.disabled = false;
+        saveCamBtn.style.opacity = '1';
+        saveCamBtn.style.cursor = 'pointer';
+      } else {
+        saveCamBtn.disabled = true;
+        saveCamBtn.style.opacity = '0.5';
+        saveCamBtn.style.cursor = 'not-allowed';
+      }
+    }
+
+    // Show message if no scene selected
+    if (!this.currentSceneName) {
+      container.innerHTML = '<div style="color:#666;font-size:10px;text-align:center;">Load a scene first</div>';
+      return;
+    }
 
     const views = Object.keys(this.currentCameraViews || {});
 
@@ -809,7 +856,8 @@ class LowPolyViewer {
       await this.applySceneState(state);
       this.currentSceneName = name;
       console.log(`Scene loaded: ${name}`);
-      this.renderSceneList();  // Update active state
+      this.renderSceneList();
+      this.renderCameraViewList();  // Update camera views for this scene
     }
   }
 
@@ -817,8 +865,12 @@ class LowPolyViewer {
     if (this.defaultSceneState) {
       await this.applySceneState(this.defaultSceneState);
       this.currentSceneName = null;
+      // Reset camera views for default scene
+      this.currentCameraViews = { 'Default': this.captureCameraState() };
+      this.activeCameraView = 'Default';
       console.log('Default scene loaded');
       this.renderSceneList();
+      this.renderCameraViewList();  // Update camera views (will show disabled state)
     }
   }
 

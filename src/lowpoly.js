@@ -2977,8 +2977,8 @@ class LowPolyViewer {
     // Load templates
     const templates = {};
     const roadPaths = {
-      'Road1': getAssetPath('Low%20Poly%20Env%20Exports/Road1.glb'),
-      'RoadX': getAssetPath('Low%20Poly%20Env%20Exports/RoadX.glb')
+      'Road1': getAssetPath('Low%20Poly%20Env%20Exports/Road1a.glb'),
+      'RoadX': getAssetPath('Low%20Poly%20Env%20Exports/RoadXa.glb')
     };
 
     for (const [name, path] of Object.entries(roadPaths)) {
@@ -2993,9 +2993,6 @@ class LowPolyViewer {
           if (node.isMesh) meshes.push(node);
         });
 
-        // Create shared bump map for all road meshes
-        const roadBumpMap = this.createRoadBumpMap();
-
         // Use road reflection camera if available, fallback to skybox
         const roadEnvMap = this.roadCubeCamera
           ? this.roadCubeCamera.renderTarget.texture
@@ -3004,21 +3001,24 @@ class LowPolyViewer {
         meshes.forEach((node) => {
           const origMat = node.material;
 
-          // Use MeshStandardMaterial for wet reflective look with building reflections
+          // Road material - wetness disabled for now
+          // const wetRoadMat = new THREE.MeshStandardMaterial({
+          //   color: 0xffffff, roughness: 0.1, metalness: 0.38,
+          //   side: THREE.DoubleSide, envMap: roadEnvMap, envMapIntensity: 1.9
+          // });
           const wetRoadMat = new THREE.MeshStandardMaterial({
             color: 0xffffff,           // White - texture shows at full color
-            roughness: 0.1,            // Lower = more wet/shiny
-            metalness: 0.38,           // Increased metalness
-            side: THREE.DoubleSide,
-            bumpMap: roadBumpMap,      // Noise texture for crunchy asphalt look
-            bumpScale: 0.15,           // More visible asphalt texture
-            envMap: roadEnvMap,        // Building reflections
-            envMapIntensity: 1.9       // Increased reflections
+            roughness: 0.8,            // Dry road
+            metalness: 0.0,            // No metalness
+            side: THREE.DoubleSide
           });
 
           // Preserve original texture map from GLB
           if (origMat.map) {
             wetRoadMat.map = origMat.map;
+            // Max anisotropic filtering for sharp road textures
+            wetRoadMat.map.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+            console.log(`Road texture: ${origMat.map.image?.width}x${origMat.map.image?.height}, anisotropy: ${wetRoadMat.map.anisotropy}`);
           }
 
           node.geometry.computeVertexNormals();
@@ -3206,8 +3206,8 @@ class LowPolyViewer {
 
     // Load Road1 and RoadX
     const roadPaths = {
-      'Road1': getAssetPath('Low%20Poly%20Env%20Exports/Road1.glb'),
-      'RoadX': getAssetPath('Low%20Poly%20Env%20Exports/RoadX.glb')
+      'Road1': getAssetPath('Low%20Poly%20Env%20Exports/Road1a.glb'),
+      'RoadX': getAssetPath('Low%20Poly%20Env%20Exports/RoadXa.glb')
     };
 
     for (const [name, path] of Object.entries(roadPaths)) {
